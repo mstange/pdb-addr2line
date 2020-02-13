@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 pdb = { git = "https://github.com/willglynn/pdb" }
 getopts = "0.2.21"
+msvc-demangler = "0.8.0"

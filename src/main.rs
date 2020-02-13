@@ -3,6 +3,7 @@ use std::io::Write;
 
 use getopts::Options;
 use std::collections::BTreeMap;
+use msvc_demangler;
 
 use pdb::{FallibleIterator, SymbolData, PDB, LineProgram, AddressMap};
 
@@ -166,8 +167,10 @@ fn walk_symbols(mut symbols: pdb::SymbolIter<'_>, mut address_map: &pdb::Address
         }
     }
 
-    if let Some((_, sym)) = first_offset {
-        println!("sym {}", sym.name)
+    if let Some((off, sym)) = first_offset {
+        let flags = msvc_demangler::DemangleFlags::NAME_ONLY;
+        let result = msvc_demangler::demangle(&sym.name.to_string(), flags).unwrap();
+        println!("sym {:x} {}", off, result);
     }
     
 
