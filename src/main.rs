@@ -39,7 +39,6 @@ where
         };
 
         let file_info = program.get_file_info(line_info.file_index)?;
-
         lines.push(LineInfo {
             address: rva,
             size: line_info.length.map(u64::from),
@@ -51,110 +50,42 @@ where
     Ok(lines)
 }
 
-use pdb::PdbInternalSectionOffset;
 
 
-fn print_row(offset: PdbInternalSectionOffset, kind: &str, name: pdb::RawString<'_>) {
-    println!(
-        "{:x}\t{:x}\t{}\t{}",
-        offset.section, offset.offset, kind, name
-    );
-}
+fn print_nearest_symbol(mut symbols: pdb::SymbolIter<'_>, address_map: &pdb::AddressMap, target: u32) -> pdb::Result<()> {
 
-fn print_symbol(symbol: &pdb::Symbol<'_>) -> pdb::Result<()> {
-    match symbol.parse()? {
-        pdb::SymbolData::Public(data) => {
-            print_row(data.offset, "function", data.name);
-        }
-        pdb::SymbolData::Data(data) => {
-            print_row(data.offset, "data", data.name);
-        }
-        pdb::SymbolData::Procedure(data) => {
-            print_row(data.offset, "function", data.name);
-        }
-        _ => {
-            // ignore everything else
-        }
-    }
-
-    Ok(())
-}
-
-fn walk_symbols(mut symbols: pdb::SymbolIter<'_>, mut address_map: &pdb::AddressMap, target: u32) -> pdb::Result<()> {
-
-    let mut depth = 0;
-    let mut inc_next = false;
-
-    /*while let Some(symbol) = symbols.next()? {
-        /*match print_symbol(&symbol) {
-            Ok(_) => (),
-            Err(e) => eprintln!("error printing symbol {:?}: {}", symbol, e),
-        }*/
-    }*/
-
-    let mut proc_offsets = Vec::new();
-
-    let mut first_offset = None;
+    let mut nearest_symbol = None;
 
     while let Some(symbol) = symbols.next()? {
-
-        if inc_next {
-            depth += 1;
-        }
-
-        inc_next = symbol.starts_scope();
-        if symbol.ends_scope() {
-            depth -= 1;
-
-            if proc_offsets.last().map_or(false, |&(d, _)| d >= depth) {
-                proc_offsets.pop();
-            }
-        }
-
         match symbol.parse() {
             Ok(SymbolData::Procedure(proc)) => {
-                proc_offsets.push((depth, proc.offset));
+                //proc_offsets.push((depth, proc.offset));
 
                 match proc.offset.to_rva(&address_map) {
 
                     Some(start) if start.0 <= target && target < start.0 + proc.len => {
                         let sign = if proc.global { "+" } else { "-" };
-                        println!("{} {:?} {:?} {} {:?} {}", sign, symbol.index(), proc.type_index, proc.name, proc.offset.to_rva(&address_map), proc.len);
-
+                        println!("{} {} {:?} {}", sign, proc.name, proc.offset.to_rva(&address_map), proc.len);
                     }
-                    Some(start) => {
-                        let sign = if proc.global { "+" } else { "-" };
+                    Some(_) => {
                         //println!("{:?} {} {}", proc.offset.to_rva(&address_map), proc.name, proc.len);
-
                         //println!("{} {:?} {:?} {} {:?} {}", sign, symbol.index(), proc.type_index, proc.name, proc.offset.to_rva(&address_map), proc.len);
-
                     }
                     _ => {
                         println!("error");
 
                     }
                 }
-
-            }
-            Ok(SymbolData::InlineSite(site)) => {
-                let parent_offset = proc_offsets
-                    .last()
-                    .map(|&(_, offset)| offset).unwrap();
-
-                // We can assume that inlinees will be listed in the inlinee table. If missing,
-                // skip silently instead of erroring out. Missing a single inline function is
-                // more acceptable in such a case than halting iteration completely.
-
             }
             Ok(SymbolData::Public(symbol)) => {
                 match symbol.offset.to_rva(&address_map) {
                     Some(rva) => {
-                        if let Some((offset,_)) = first_offset {
+                        if let Some((offset,_)) = nearest_symbol {
                             if rva.0 > offset && rva.0 < target {
-                                first_offset = Some((rva.0, symbol));
+                                nearest_symbol = Some((rva.0, symbol));
                             }
                         } else {
-                            first_offset = Some((rva.0, symbol));
+                            nearest_symbol = Some((rva.0, symbol));
                         }
                     }
                     _ => {
@@ -163,11 +94,11 @@ fn walk_symbols(mut symbols: pdb::SymbolIter<'_>, mut address_map: &pdb::Address
                     }
                 }
             }
-            _k => {  }
+            _ => {  }
         }
     }
 
-    if let Some((off, sym)) = first_offset {
+    if let Some((off, sym)) = nearest_symbol {
         let flags = msvc_demangler::DemangleFlags::NAME_ONLY;
         let result = msvc_demangler::demangle(&sym.name.to_string(), flags).unwrap();
         println!("sym {:x} {}", off, result);
@@ -183,7 +114,7 @@ fn find_symbol(mut pdb: PDB<File>, target: u32) -> pdb::Result<()> {
     let mut address_map = pdb.address_map()?;
 
     println!("Global symbols:");
-    walk_symbols(symbol_table.iter(), &mut address_map, target)?;
+    print_nearest_symbol(symbol_table.iter(), &mut address_map, target)?;
 
     println!("Module private symbols:");
     let dbi = pdb.debug_information()?;
@@ -198,7 +129,7 @@ fn find_symbol(mut pdb: PDB<File>, target: u32) -> pdb::Result<()> {
             }
         };
 
-        walk_symbols(info.symbols()?, &mut address_map, target)?;
+        print_nearest_symbol(info.symbols()?, &mut address_map, target)?;
     }
     Ok(())
 }
@@ -229,17 +160,12 @@ fn dump_pdb(filename: &str, target: u32) -> pdb::Result<()> {
         let info = match pdb.module_info(&module)? {
             Some(info) => info,
             None => {
-                println!("  no module info");
+                //println!("  no module info");
                 continue;
             }
         };
-        let program = info.line_program();
-        let mut inlinees = info.inlinees()?;
-        for i in inlinees.iterator() {
-            dbg!(i);
-        }
 
-        let inlinees: BTreeMap<_, _> = info.inlinees()?.map(|i| (i.index(), i)).collect()?;
+        let inlinees: BTreeMap<_, _> = info.inlinees()?.map(|i| Ok((i.index(), i))).collect()?;
 
         let program = info.line_program()?;
         let mut symbols = info.symbols()?;
@@ -273,20 +199,28 @@ fn dump_pdb(filename: &str, target: u32) -> pdb::Result<()> {
                             let sign = if proc.global { "+" } else { "-" };
                             println!("{} {:?} {:?} {} {:?} {}", sign, symbol.index(), proc.type_index, proc.name, proc.offset.to_rva(&address_map), proc.len);
 
-                            let mut lines = program.lines_at_offset(proc.offset);
+                            let mut lines = program.lines_at_offset(proc.offset).peekable();
                             while let Some(line_info) = lines.next()? {
                                 let rva = line_info.offset.to_rva(&address_map).expect("invalid rva");
                                 let length = line_info.length;
                                 let file_info = program.get_file_info(line_info.file_index)?;
                                 let file_name = file_info.name.to_string_lossy(&string_table)?;
-                                println!("  {} {:?} {}:{}", rva, length, file_name, line_info.line_start);
+                                match lines.peek()? {
+                                    Some(info) => {
+                                        if rva.0 <= target && info.offset.to_rva(&address_map).expect("invalid rva").0 > target {
+                                            println!("  {} {:?} {}:{}", rva, length, file_name, line_info.line_start);
+                                            break;
+                                        }
+                                    }
+                                    _ => println!("  {} {:?} {}:{}", rva, length, file_name, line_info.line_start),
+                                };
                             }
                         }
                         _ => {}
                     }
 
                 }
-/*                Ok(SymbolData::InlineSite(site)) => {
+                Ok(SymbolData::InlineSite(site)) => {
                     let parent_offset = proc_offsets
                         .last()
                         .map(|&(_, offset)| offset).unwrap();
@@ -295,12 +229,12 @@ fn dump_pdb(filename: &str, target: u32) -> pdb::Result<()> {
                     // skip silently instead of erroring out. Missing a single inline function is
                     // more acceptable in such a case than halting iteration completely.
                     if let Some(inlinee) = inlinees.get(&site.inlinee) {
-                        println!("Found inline parent_offset {:?} {:?} {:?}", parent_offset.to_rva(&address_map), site, inlinee);
+                        // println!("Found inline parent_offset {:?} {:?} {:?}", parent_offset.to_rva(&address_map), site, inlinee);
                         let line_iter = inlinee.lines(parent_offset, &site);
                         let lines = collect_lines(line_iter, &program, &address_map, &string_table)?;
                         for l in lines {
                             if l.address <= target.into() && l.address + l.size.unwrap() > target.into() {
-                                println!("{:?} {:?}", l, site.inlinee);
+                                println!("{:?} ({:x?} {:x} {:x?}) {:?}", l, l.address,target, l.address + l.size.unwrap(), site.inlinee);
                                 for i in ipi.iter().iterator() {
                                     if let Ok(i) = i {
                                         if i.index() == site.inlinee {
@@ -311,7 +245,7 @@ fn dump_pdb(filename: &str, target: u32) -> pdb::Result<()> {
                             }
                         }
                     }
-                }*/
+                }
                 _ => {}
             }
         }
