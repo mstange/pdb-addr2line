@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pdb = "0.6"
+pdb = "0.7"
 getopts = "0.2.21"
 msvc-demangler = "0.8.0"
 
