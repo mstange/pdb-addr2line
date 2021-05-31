@@ -1,13 +1,13 @@
 [package]
 name = "pdb-addr2line"
 version = "0.1.0"
-authors = ["Jeff Muizelaar <jrmuizel@gmail.com>"]
+authors = ["Jeff Muizelaar <jrmuizel@gmail.com>", "Markus Stange <mstange.moz@gmail.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-pdb = "0.7"
+pdb = "0.7.0"
+
+[dev-dependencies]
 getopts = "0.2.21"
 msvc-demangler = "0.8.0"
 
