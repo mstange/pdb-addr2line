@@ -1,8 +1,9 @@
 [package]
+authors = ["Jeff Muizelaar <jrmuizel@gmail.com>", "Markus Stange <mstange.moz@gmail.com>"]
+license = "MIT/Apache-2.0"
+edition = "2018"
 name = "pdb-addr2line"
 version = "0.1.0"
-authors = ["Jeff Muizelaar <jrmuizel@gmail.com>", "Markus Stange <mstange.moz@gmail.com>"]
-edition = "2018"
 
 [dependencies]
 pdb = "0.7.0"
