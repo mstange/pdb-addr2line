@@ -3,3 +3,6 @@
 //! and inline stacks.
 
 pub use pdb;
+
+mod type_formatter;
+pub use type_formatter::*;
