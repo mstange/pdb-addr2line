@@ -3,7 +3,6 @@ use std::io::Write;
 
 use getopts::Options;
 use std::collections::BTreeMap;
-use msvc_demangler;
 
 use pdb::{FallibleIterator, SymbolData, PDB, LineProgram, AddressMap};
 
@@ -111,10 +110,10 @@ fn print_nearest_symbol(mut symbols: pdb::SymbolIter<'_>, address_map: &pdb::Add
 use std::fs::File;
 fn find_symbol(mut pdb: PDB<File>, target: u32) -> pdb::Result<()> {
     let symbol_table = pdb.global_symbols()?;
-    let mut address_map = pdb.address_map()?;
+    let address_map = pdb.address_map()?;
 
     println!("Global symbols:");
-    print_nearest_symbol(symbol_table.iter(), &mut address_map, target)?;
+    print_nearest_symbol(symbol_table.iter(), &address_map, target)?;
 
     println!("Module private symbols:");
     let dbi = pdb.debug_information()?;
@@ -129,7 +128,7 @@ fn find_symbol(mut pdb: PDB<File>, target: u32) -> pdb::Result<()> {
             }
         };
 
-        print_nearest_symbol(info.symbols()?, &mut address_map, target)?;
+        print_nearest_symbol(info.symbols()?, &address_map, target)?;
     }
     Ok(())
 }
