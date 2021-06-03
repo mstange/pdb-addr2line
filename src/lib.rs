@@ -53,11 +53,9 @@ impl<'s> ContextPdbData<'s> {
         let mut module_iter = debug_info.modules()?;
         let mut modules = Vec::new();
         while let Some(module) = module_iter.next()? {
-            let module_info = match pdb.module_info(&module)? {
-                Some(m) => m,
-                None => continue,
+            if let Some(module_info) = pdb.module_info(&module)? {
+                modules.push(module_info);
             };
-            modules.push(module_info);
         }
 
         Ok(Self {
