@@ -150,7 +150,7 @@ fn main() {
     let cursor = Cursor::new(map);
 
     let mut pdb = pdb::PDB::open(cursor).unwrap();
-    let context_data = pdb_addr2line::ContextConstructionData::try_from_pdb(&mut pdb).unwrap();
+    let context_data = pdb_addr2line::ContextPdbData::try_from_pdb(&mut pdb).unwrap();
     let ctx = context_data.make_context().unwrap();
 
     let stdin = std::io::stdin();
