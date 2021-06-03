@@ -13,11 +13,11 @@ repository = "https://github.com/mstange/pdb-addr2line"
 version = "0.1.0"
 
 [dependencies]
-bitflags = "*"
+bitflags = "1.0"
 maybe-owned = "0.3.4"
 pdb = "0.7.0"
 range-collections = "0.1.1"
-thiserror = "*"
+thiserror = "1.0"
 
 [dev-dependencies]
 clap = "2"
