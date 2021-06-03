@@ -7,6 +7,7 @@ version = "0.1.0"
 
 [dependencies]
 bitflags = "*"
+maybe-owned = "0.3.4"
 pdb = "0.7.0"
 thiserror = "*"
 range-collections = "0.1.1"

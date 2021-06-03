@@ -105,7 +105,7 @@ pub struct TypeFormatter<'t> {
 impl<'t> TypeFormatter<'t> {
     /// Create a new TypeFormatter with the help of various PDB streams.
     pub fn new(
-        debug_info: &'t DebugInformation<'_>,
+        debug_info: &DebugInformation<'_>,
         type_info: &'t TypeInformation<'_>,
         id_info: &'t IdInformation<'_>,
         flags: TypeFormatterFlags,

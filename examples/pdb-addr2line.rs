@@ -148,15 +148,10 @@ fn main() {
     let file = File::open(path).unwrap();
     let map = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
     let cursor = Cursor::new(map);
-    let mut pdb = pdb::PDB::open(cursor).unwrap();
 
-    let dbi = pdb.debug_information().unwrap();
-    let tpi = pdb.type_information().unwrap();
-    let ipi = pdb.id_information().unwrap();
-    let type_formatter =
-        pdb_addr2line::TypeFormatter::new(&dbi, &tpi, &ipi, Default::default()).unwrap();
+    let mut pdb = pdb::PDB::open(cursor).unwrap();
     let context_data = pdb_addr2line::ContextConstructionData::try_from_pdb(&mut pdb).unwrap();
-    let ctx = pdb_addr2line::Context::new(&context_data, &type_formatter).unwrap();
+    let ctx = context_data.make_context().unwrap();
 
     let stdin = std::io::stdin();
     let addrs = matches
