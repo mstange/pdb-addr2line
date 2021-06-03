@@ -62,7 +62,10 @@ bitflags! {
 
 impl Default for TypeFormatterFlags {
     fn default() -> Self {
-        Self::NO_FUNCTION_RETURN | Self::SPACE_AFTER_COMMA | Self::NAME_ONLY
+        Self::NO_FUNCTION_RETURN
+            | Self::NO_MEMBER_FUNCTION_STATIC
+            | Self::SPACE_AFTER_COMMA
+            | Self::NAME_ONLY
     }
 }
 

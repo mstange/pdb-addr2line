@@ -153,9 +153,8 @@ fn main() {
     let dbi = pdb.debug_information().unwrap();
     let tpi = pdb.type_information().unwrap();
     let ipi = pdb.id_information().unwrap();
-    let flags = pdb_addr2line::TypeFormatterFlags::default()
-        | pdb_addr2line::TypeFormatterFlags::NO_MEMBER_FUNCTION_STATIC;
-    let type_formatter = pdb_addr2line::TypeFormatter::new(&dbi, &tpi, &ipi, flags).unwrap();
+    let type_formatter =
+        pdb_addr2line::TypeFormatter::new(&dbi, &tpi, &ipi, Default::default()).unwrap();
     let context_data = pdb_addr2line::ContextConstructionData::try_from_pdb(&mut pdb).unwrap();
     let ctx = pdb_addr2line::Context::new(&context_data, &type_formatter).unwrap();
 
