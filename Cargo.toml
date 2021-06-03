@@ -9,6 +9,7 @@ version = "0.1.0"
 bitflags = "*"
 pdb = "0.7.0"
 thiserror = "*"
+range-collections = "0.1.1"
 
 [dev-dependencies]
 getopts = "0.2.21"
