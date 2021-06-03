@@ -41,7 +41,7 @@ impl From<std::fmt::Error> for Error {
 type Result<V> = std::result::Result<V, Error>;
 
 bitflags! {
-    /// Flags for the [`TypeFormatter`].
+    /// Flags for [`TypeFormatter`].
     pub struct TypeFormatterFlags: u32 {
         /// Do not print the return type for the root function.
         const NO_FUNCTION_RETURN = 0b1;
@@ -86,11 +86,14 @@ struct PtrAttributes {
 }
 
 /// Allows printing function signatures, for example for use in stack traces.
-/// Private symbols in PDBs usually have a name string which only includes the function name,
-/// and no function arguments. The arguments need to be obtained from the symbol's type information.
-/// The same is true for "inlinee" functions - these are referenced by their IdIndex, and their
-/// IdData's name string again only contains the raw function name but no arguments and also
-/// no namespace or class name.
+///
+/// Procedure symbols in PDBs usually have a name string which only includes the function name,
+/// and no function arguments. Instead, the arguments need to be obtained from the symbol's type
+/// information. [`TypeFormatter`] handles that.
+///
+/// The same is true for "inlinee" functions - these are referenced by their [`pdb::IdIndex`], and their
+/// [`IdData`]'s name string again only contains the raw function name but no arguments and also
+/// no namespace or class name. [`TypeFormatter`] handles those, too, in [`TypeFormatter::write_id`].
 pub struct TypeFormatter<'t> {
     type_finder: TypeFinder<'t>,
     id_finder: IdFinder<'t>,

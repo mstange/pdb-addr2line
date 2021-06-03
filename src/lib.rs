@@ -1,21 +1,56 @@
-//! The APIs in this crate allow resolving addresses to function name and
-//! file name / line number information with the help of a PDB file.
-//! Inline stacks are supported.
-//! The `Context` API is somewhat similar to the gimli/addr2line API.
-//! There is also a `TypeFormatter` API which can be used to get function signature
-//! strings, including arguments and scopes, and, if requested, return types. It
-//! can be used independently from the `Context` API.
+//! Resolve addresses to function names, and to file name and line number
+//! information, with the help of a PDB file. Inline stacks are supported.
+//!
+//! The API of this crate is intended to be similar to the API of the
+//! [`addr2line` crate](https://docs.rs/addr2line/); the two [`Context`] APIs
+//! have comparable functionality. This crate is for PDB files whereas `addr2line`
+//! is for DWARF data (which is used in ELF and mach-o binaries, for example).
+//!
+//! This crate also has a [`TypeFormatter`] API which can be used to get function signature
+//! strings independently from a [`Context`].
+//!
+//! To create a [`Context`], use [`ContextPdbData`].
+//!
+//! # Example
+//!
+//! ```
+//! use pdb_addr2line::pdb;
+//!
+//! fn look_up_addresses<'s, S: pdb::Source<'s> + 's>(stream: S, addresses: &[u32]) -> pdb::Result<()> {
+//!     let mut pdb = pdb::PDB::open(stream)?;
+//!     let context_data = pdb_addr2line::ContextPdbData::try_from_pdb(&mut pdb)?;
+//!     let context = context_data.make_context()?;
+//!
+//!     for address in addresses {
+//!         if let Some(procedure_frames) = context.find_frames(*address)? {
+//!             eprintln!("0x{:x} - {} frames:", address, procedure_frames.frames.len());
+//!             for frame in procedure_frames.frames {
+//!                 let line_str = frame.line.map(|l| format!("{}", l));
+//!                 eprintln!(
+//!                     "     {} at {}:{}",
+//!                     frame.function.as_deref().unwrap_or("<unknown>"),
+//!                     frame.file.as_deref().unwrap_or("??"),
+//!                     line_str.as_deref().unwrap_or("??"),
+//!                 )
+//!             }
+//!         } else {
+//!             eprintln!("{:x} - no frames found", address);
+//!         }
+//!     }
+//!     Ok(())
+//! }
+//! ```
 
 pub use maybe_owned;
 pub use pdb;
 
 mod type_formatter;
+pub use type_formatter::*;
 
 use maybe_owned::MaybeOwned;
 use pdb::DebugInformation;
 use pdb::IdInformation;
 use pdb::TypeInformation;
-pub use type_formatter::*;
 
 use pdb::{
     AddressMap, FallibleIterator, FileIndex, IdIndex, InlineSiteSymbol, Inlinee, LineProgram,
@@ -29,7 +64,25 @@ use std::ops::Bound;
 use std::rc::Rc;
 use std::{borrow::Cow, cell::RefCell, collections::BTreeMap};
 
-/// Has to be created before a [`Context`] is created
+/// Allows to easily create a [`Context`] directly from a [`pdb::PDB`].
+///
+/// ```
+/// # fn wrapper<'s, S: pdb::Source<'s> + 's>(stream: S) -> pdb::Result<()> {
+/// let mut pdb = pdb::PDB::open(stream)?;
+/// let context_data = pdb_addr2line::ContextPdbData::try_from_pdb(&mut pdb)?;
+/// let context = context_data.make_context()?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Implementation note:
+/// It would be nice if a [`Context`] could be created from a [`PDB`] directly, without
+/// going through an intermediate [`ContextPdbData`] object. However, there doesn't
+/// seem to be an easy way to do this, due to certain lifetime dependencies: The
+/// [`Context`] object wants to store certain objects inside itself (mostly for caching)
+/// which have a lifetime dependency on [`pdb::ModuleInfo`], so the [`ModuleInfo`] has to be
+/// owned outside of the [`Context`]. So the [`ContextPdbData`] object acts as that external
+/// [`ModuleInfo`] owner.
 pub struct ContextPdbData<'s> {
     modules: Vec<ModuleInfo<'s>>,
     address_map: AddressMap<'s>,
@@ -40,6 +93,9 @@ pub struct ContextPdbData<'s> {
 }
 
 impl<'s> ContextPdbData<'s> {
+    /// Create a [`ContextPdbData`] from a [`PDB`](pdb::PDB). This parses many of the PDB
+    /// streams and stores them in the [`ContextPdbData`]. Most importantly, it builds
+    /// a list of all the [`ModuleInfo`](pdb::ModuleInfo) objects in the PDB.
     pub fn try_from_pdb<S: Source<'s> + 's>(pdb: &mut PDB<'s, S>) -> Result<Self> {
         let debug_info = pdb.debug_information()?;
         let type_info = pdb.type_information()?;
@@ -68,10 +124,12 @@ impl<'s> ContextPdbData<'s> {
         })
     }
 
+    /// Create a [`Context`]. This uses the default [`TypeFormatter`] settings.
     pub fn make_context(&self) -> Result<Context<'_, 's, '_>> {
         self.make_context_with_formatter_flags(Default::default())
     }
 
+    /// Create a [`Context`], using the specified [`TypeFormatter`] flags.
     pub fn make_context_with_formatter_flags(
         &self,
         flags: TypeFormatterFlags,
@@ -88,25 +146,43 @@ impl<'s> ContextPdbData<'s> {
     }
 }
 
+/// Basic information about a procedure (a function or a method).
 #[derive(Clone)]
 pub struct Procedure {
-    pub procedure_start_rva: u32,
+    /// The start address of the procedure.
+    pub start_rva: u32,
+    /// The end address of the procedure.
+    pub end_rva: u32,
+    /// The function name. `None` if there was an error during stringification.
     pub function: Option<String>,
 }
 
+/// The result of an address lookup from [`Context::find_frames`].
 #[derive(Clone)]
 pub struct ProcedureFrames<'a> {
-    pub procedure_start_rva: u32,
+    /// The start address of the procedure which contained the looked-up address.
+    pub start_rva: u32,
+    /// The end address of the procedure which contained the looked-up address.
+    pub end_rva: u32,
+    /// The inline stack at the looked-up address, ordered from inside to outside.
+    /// Always contains at least one entry: the last element is always the procedure
+    /// which contains the looked-up address.
     pub frames: Vec<Frame<'a>>,
 }
 
+/// One frame of the inline stack at the looked-up address.
 #[derive(Clone)]
 pub struct Frame<'a> {
+    /// The function name. `None` if there was an error during stringification.
     pub function: Option<String>,
+    /// The file name, if known.
     pub file: Option<Cow<'a, str>>,
+    /// The line number, if known. This is the source line inside this function
+    /// that is associated with the instruction at the looked-up address.
     pub line: Option<u32>,
 }
 
+/// The main API of this crate. Resolves addresses to function information.
 pub struct Context<'a: 't, 's, 't> {
     address_map: &'a AddressMap<'s>,
     string_table: Option<&'a StringTable<'s>>,
@@ -118,6 +194,12 @@ pub struct Context<'a: 't, 's, 't> {
 }
 
 impl<'a, 's, 't> Context<'a, 's, 't> {
+    /// Create a [`Context`] manually. Most consumers will want to use
+    /// [`ContextPdbData::make_context`] instead.
+    ///
+    /// However, if you interact with a PDB directly and parse some of its contents
+    /// for other uses, you may want to call this method in order to avoid overhead
+    /// from repeatedly parsing the same streams.
     pub fn new_from_parts(
         address_map: &'a AddressMap<'s>,
         string_table: Option<&'a StringTable<'s>>,
@@ -172,10 +254,14 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         })
     }
 
+    /// The number of procedures found in the modules. If the PDB file lists
+    /// multiple procedures sharing the same rva range, the shared range is only
+    /// counted as one procedure. In other words, this count is post-deduplication.
     pub fn procedure_count(&self) -> usize {
         self.procedures.len()
     }
 
+    /// Iterate over all procedures in the modules.
     pub fn iter_procedures(&self) -> ProcedureIter<'_, 'a, 's, 't> {
         ProcedureIter {
             context: self,
@@ -183,19 +269,28 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         }
     }
 
-    pub fn find_function(&self, probe: u32) -> Result<Option<Procedure>> {
+    /// Find the procedure (function or method) whose code contains the provided address.
+    /// The return value only contains the function name and the rva range, but
+    /// no file or line information.
+    pub fn find_procedure(&self, probe: u32) -> Result<Option<Procedure>> {
         let proc = match self.lookup_proc(probe) {
             Some(proc) => proc,
             None => return Ok(None),
         };
-        let procedure_start_rva = proc.start_rva;
         let function = (*self.get_procedure_name(proc)).clone();
         Ok(Some(Procedure {
-            procedure_start_rva,
+            start_rva: proc.start_rva,
+            end_rva: proc.end_rva,
             function,
         }))
     }
 
+    /// Find information about the source code which generated the instruction at the
+    /// provided address. This information includes the function name, file name and
+    /// line number, of the containing procedure and of any functions that were inlined
+    /// into the procedure by the compiler, at that address.
+    ///
+    /// A lot of information is cached so that repeated calls are fast.
     pub fn find_frames(&self, probe: u32) -> Result<Option<ProcedureFrames>> {
         let proc = match self.lookup_proc(probe) {
             Some(proc) => proc,
@@ -282,9 +377,9 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         // Now order from inside to outside.
         frames.reverse();
 
-        let procedure_start_rva = proc.start_rva;
         Ok(Some(ProcedureFrames {
-            procedure_start_rva,
+            start_rva: proc.start_rva,
+            end_rva: proc.end_rva,
             frames,
         }))
     }
@@ -567,6 +662,8 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     }
 }
 
+/// An iterator over all procedures in a [`Context`].
+#[derive(Clone)]
 pub struct ProcedureIter<'c, 'a, 's, 't> {
     context: &'c Context<'a, 's, 't>,
     cur_index: usize,
@@ -583,9 +680,9 @@ impl<'c, 'a, 's, 't> Iterator for ProcedureIter<'c, 'a, 's, 't> {
         self.cur_index += 1;
 
         let function = (*self.context.get_procedure_name(proc)).clone();
-        let procedure_start_rva = proc.start_rva;
         Some(Procedure {
-            procedure_start_rva,
+            start_rva: proc.start_rva,
+            end_rva: proc.end_rva,
             function,
         })
     }
@@ -595,9 +692,9 @@ impl<'c, 'a, 's, 't> Iterator for ProcedureIter<'c, 'a, 's, 't> {
 struct ProcedureCache(BTreeMap<u32, ExtendedProcedureInfo>);
 
 impl ProcedureCache {
-    fn get_entry_mut(&mut self, procedure_start_rva: u32) -> &mut ExtendedProcedureInfo {
+    fn get_entry_mut(&mut self, start_rva: u32) -> &mut ExtendedProcedureInfo {
         self.0
-            .entry(procedure_start_rva)
+            .entry(start_rva)
             .or_insert_with(|| ExtendedProcedureInfo {
                 name: None,
                 lines: None,
