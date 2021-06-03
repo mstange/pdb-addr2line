@@ -6,9 +6,13 @@
 //! strings, including arguments and scopes, and, if requested, return types. It
 //! can be used independently from the `Context` API.
 
+use maybe_owned::MaybeOwned;
 pub use pdb;
 
 mod type_formatter;
+use pdb::DebugInformation;
+use pdb::IdInformation;
+use pdb::TypeInformation;
 pub use type_formatter::*;
 
 use pdb::{
@@ -23,16 +27,20 @@ use std::ops::Bound;
 use std::rc::Rc;
 use std::{borrow::Cow, cell::RefCell, collections::BTreeMap};
 
+/// Has to be created before a [`Context`] is created
 pub struct ContextConstructionData<'s> {
     address_map: AddressMap<'s>,
     string_table: Option<StringTable<'s>>,
     modules: Vec<ModuleInfo<'s>>,
+    debug_info: DebugInformation<'s>,
+    type_info: TypeInformation<'s>,
+    id_info: IdInformation<'s>,
 }
 
 impl<'s> ContextConstructionData<'s> {
     pub fn try_from_pdb<S: Source<'s> + 's>(pdb: &mut PDB<'s, S>) -> Result<Self> {
-        let dbi = pdb.debug_information()?;
-        let mut module_iter = dbi.modules()?;
+        let debug_info = pdb.debug_information()?;
+        let mut module_iter = debug_info.modules()?;
         let mut modules = Vec::new();
         while let Some(module) = module_iter.next()? {
             let module_info = match pdb.module_info(&module)? {
@@ -44,12 +52,36 @@ impl<'s> ContextConstructionData<'s> {
 
         let address_map = pdb.address_map()?;
         let string_table = pdb.string_table().ok();
+        let type_info = pdb.type_information()?;
+        let id_info = pdb.id_information()?;
 
         Ok(Self {
             address_map,
             string_table,
             modules,
+            debug_info,
+            type_info,
+            id_info,
         })
+    }
+
+    pub fn make_context(&self) -> Result<Context<'_, 's, '_>> {
+        self.make_context_with_formatter_flags(Default::default())
+    }
+
+    pub fn make_context_with_formatter_flags(
+        &self,
+        flags: TypeFormatterFlags,
+    ) -> Result<Context<'_, 's, '_>> {
+        let type_formatter =
+            TypeFormatter::new(&self.debug_info, &self.type_info, &self.id_info, flags)?;
+
+        Context::new_from_parts(
+            &self.address_map,
+            self.string_table.as_ref(),
+            &self.modules,
+            MaybeOwned::Owned(type_formatter),
+        )
     }
 }
 
@@ -72,10 +104,10 @@ pub struct Frame<'a> {
     pub line: Option<u32>,
 }
 
-pub struct Context<'a, 's, 't> {
+pub struct Context<'a: 't, 's, 't> {
     address_map: &'a AddressMap<'s>,
     string_table: Option<&'a StringTable<'s>>,
-    type_formatter: &'a TypeFormatter<'t>,
+    type_formatter: MaybeOwned<'a, TypeFormatter<'t>>,
     modules: &'a [ModuleInfo<'s>],
     procedures: Vec<BasicProcedureInfo<'a>>,
     procedure_cache: RefCell<ProcedureCache>,
@@ -83,20 +115,22 @@ pub struct Context<'a, 's, 't> {
 }
 
 impl<'a, 's, 't> Context<'a, 's, 't> {
-    pub fn new(
-        constr_data: &'a ContextConstructionData<'s>,
-        type_formatter: &'a TypeFormatter<'t>,
+    pub fn new_from_parts(
+        address_map: &'a AddressMap<'s>,
+        string_table: Option<&'a StringTable<'s>>,
+        modules: &'a [ModuleInfo<'s>],
+        type_formatter: MaybeOwned<'a, TypeFormatter<'t>>,
     ) -> Result<Self> {
         let mut procedures = Vec::new();
 
-        for (module_index, module_info) in constr_data.modules.iter().enumerate() {
+        for (module_index, module_info) in modules.iter().enumerate() {
             let mut symbols_iter = module_info.symbols()?;
             while let Some(symbol) = symbols_iter.next()? {
                 if let Ok(SymbolData::Procedure(proc)) = symbol.parse() {
                     if proc.len == 0 {
                         continue;
                     }
-                    let start_rva = match proc.offset.to_rva(&constr_data.address_map) {
+                    let start_rva = match proc.offset.to_rva(&address_map) {
                         Some(rva) => rva.0,
                         None => continue,
                     };
@@ -125,10 +159,10 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         procedures.dedup_by_key(|p| p.start_rva);
 
         Ok(Self {
-            address_map: &constr_data.address_map,
-            string_table: constr_data.string_table.as_ref(),
+            address_map,
+            string_table,
             type_formatter,
-            modules: &constr_data.modules,
+            modules,
             procedures,
             procedure_cache: RefCell::new(Default::default()),
             module_cache: RefCell::new(BTreeMap::new()),
