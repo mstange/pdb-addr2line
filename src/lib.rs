@@ -6,10 +6,12 @@
 //! strings, including arguments and scopes, and, if requested, return types. It
 //! can be used independently from the `Context` API.
 
-use maybe_owned::MaybeOwned;
+pub use maybe_owned;
 pub use pdb;
 
 mod type_formatter;
+
+use maybe_owned::MaybeOwned;
 use pdb::DebugInformation;
 use pdb::IdInformation;
 use pdb::TypeInformation;
@@ -28,18 +30,26 @@ use std::rc::Rc;
 use std::{borrow::Cow, cell::RefCell, collections::BTreeMap};
 
 /// Has to be created before a [`Context`] is created
-pub struct ContextConstructionData<'s> {
+pub struct ContextPdbData<'s> {
+    modules: Vec<ModuleInfo<'s>>,
     address_map: AddressMap<'s>,
     string_table: Option<StringTable<'s>>,
-    modules: Vec<ModuleInfo<'s>>,
     debug_info: DebugInformation<'s>,
     type_info: TypeInformation<'s>,
     id_info: IdInformation<'s>,
 }
 
-impl<'s> ContextConstructionData<'s> {
+impl<'s> ContextPdbData<'s> {
     pub fn try_from_pdb<S: Source<'s> + 's>(pdb: &mut PDB<'s, S>) -> Result<Self> {
         let debug_info = pdb.debug_information()?;
+        let type_info = pdb.type_information()?;
+        let id_info = pdb.id_information()?;
+        let address_map = pdb.address_map()?;
+        let string_table = pdb.string_table().ok();
+
+        // Load all modules. We store their parsed form in the ContextPdbData so that the
+        // Context we create later can internally store objects which have a lifetime
+        // dependency on the ModuleInfo, such as RawStrings, Inlinees and LinePrograms.
         let mut module_iter = debug_info.modules()?;
         let mut modules = Vec::new();
         while let Some(module) = module_iter.next()? {
@@ -50,18 +60,13 @@ impl<'s> ContextConstructionData<'s> {
             modules.push(module_info);
         }
 
-        let address_map = pdb.address_map()?;
-        let string_table = pdb.string_table().ok();
-        let type_info = pdb.type_information()?;
-        let id_info = pdb.id_information()?;
-
         Ok(Self {
-            address_map,
-            string_table,
             modules,
             debug_info,
             type_info,
             id_info,
+            address_map,
+            string_table,
         })
     }
 
