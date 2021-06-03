@@ -1,282 +1,241 @@
-use std::env;
-use std::io::Write;
-
-use getopts::Options;
-use std::collections::BTreeMap;
-
-use pdb::{FallibleIterator, SymbolData, PDB, LineProgram, AddressMap};
-
-
-/// File and line number mapping for an instruction address.
-#[derive(Clone, Debug)]
-pub struct LineInfo {
-    /// The instruction address relative to the image base (load address).
-    pub address: u64,
-    /// Total code size covered by this line record.
-    pub size: Option<u64>,
-    /// File name and path.
-    pub file: String,
-    /// Absolute line number starting at 1. Zero means no line number.
-    pub line: u64,
-}
-
-fn collect_lines<I>(
-    mut line_iter: I,
-    program: &LineProgram,
-    address_map: &AddressMap,
-    string_table: &pdb::StringTable,
-) -> Result<Vec<LineInfo>, pdb::Error>
-where
-    I: FallibleIterator<Item = pdb::LineInfo, Error = pdb::Error>
-{
-
-    let mut lines = Vec::new();
-    while let Some(line_info) = line_iter.next()? {
-        let rva = match line_info.offset.to_rva(&address_map) {
-            Some(rva) => u64::from(rva.0),
-            None => continue,
-        };
-
-        let file_info = program.get_file_info(line_info.file_index)?;
-        lines.push(LineInfo {
-            address: rva,
-            size: line_info.length.map(u64::from),
-            file: file_info.name.to_string_lossy(string_table).unwrap().to_string(),
-            line: line_info.line_start.into(),
-        });
-    }
-
-    Ok(lines)
-}
-
-
-
-fn print_nearest_symbol(mut symbols: pdb::SymbolIter<'_>, address_map: &pdb::AddressMap, target: u32) -> pdb::Result<()> {
-
-    let mut nearest_symbol = None;
-
-    while let Some(symbol) = symbols.next()? {
-        match symbol.parse() {
-            Ok(SymbolData::Procedure(proc)) => {
-                //proc_offsets.push((depth, proc.offset));
-
-                match proc.offset.to_rva(&address_map) {
-
-                    Some(start) if start.0 <= target && target < start.0 + proc.len => {
-                        let sign = if proc.global { "+" } else { "-" };
-                        println!("{} {} {:?} {}", sign, proc.name, proc.offset.to_rva(&address_map), proc.len);
-                    }
-                    Some(_) => {
-                        //println!("{:?} {} {}", proc.offset.to_rva(&address_map), proc.name, proc.len);
-                        //println!("{} {:?} {:?} {} {:?} {}", sign, symbol.index(), proc.type_index, proc.name, proc.offset.to_rva(&address_map), proc.len);
-                    }
-                    _ => {
-                        println!("error");
-
-                    }
-                }
-            }
-            Ok(SymbolData::Public(symbol)) => {
-                match symbol.offset.to_rva(&address_map) {
-                    Some(rva) => {
-                        if let Some((offset,_)) = nearest_symbol {
-                            if rva.0 > offset && rva.0 < target {
-                                nearest_symbol = Some((rva.0, symbol));
-                            }
-                        } else {
-                            nearest_symbol = Some((rva.0, symbol));
-                        }
-                    }
-                    _ => {
-                        println!("error");
-
-                    }
-                }
-            }
-            _ => {  }
-        }
-    }
-
-    if let Some((off, sym)) = nearest_symbol {
-        let flags = msvc_demangler::DemangleFlags::NAME_ONLY;
-        let result = msvc_demangler::demangle(&sym.name.to_string(), flags).unwrap();
-        println!("sym {:x} {}", off, result);
-    }
-    
-
-    Ok(())
-}
-
+use std::borrow::Cow;
 use std::fs::File;
-fn find_symbol(mut pdb: PDB<File>, target: u32) -> pdb::Result<()> {
-    let symbol_table = pdb.global_symbols()?;
-    let address_map = pdb.address_map()?;
+use std::io::Cursor;
+use std::io::{BufRead, Lines, StdinLock, Write};
+use std::path::Path;
 
-    println!("Global symbols:");
-    print_nearest_symbol(symbol_table.iter(), &address_map, target)?;
+use clap::{App, Arg, Values};
+use pdb_addr2line::pdb;
 
-    println!("Module private symbols:");
-    let dbi = pdb.debug_information()?;
-    let mut modules = dbi.modules()?;
-    while let Some(module) = modules.next()? {
-        //println!("Module: {}", module.object_file_name());
-        let info = match pdb.module_info(&module)? {
-            Some(info) => info,
-            None => {
-                //println!("  no module info");
-                continue;
-            }
-        };
-
-        print_nearest_symbol(info.symbols()?, &address_map, target)?;
+fn parse_uint_from_hex_string(string: &str) -> u32 {
+    if string.len() > 2 && string.starts_with("0x") {
+        u32::from_str_radix(&string[2..], 16).expect("Failed to parse address")
+    } else {
+        u32::from_str_radix(string, 16).expect("Failed to parse address")
     }
-    Ok(())
 }
 
+enum Addrs<'a> {
+    Args(Values<'a>),
+    Stdin(Lines<StdinLock<'a>>),
+}
 
-fn dump_pdb(filename: &str, target: u32) -> pdb::Result<()> {
-    let file = std::fs::File::open(filename)?;
-    let mut pdb = PDB::open(file)?;
+impl<'a> Iterator for Addrs<'a> {
+    type Item = u32;
 
-
-    let address_map = pdb.address_map()?;
-    let string_table = pdb.string_table();
-    let string_table = match string_table {
-        Ok(string_table) => string_table,
-        _ => {
-            println!("no string table using symbols");
-            return find_symbol(pdb, target);
-        }
-    };
-
-    println!("Module private symbols:");
-    let dbi = pdb.debug_information()?;
-    let ipi = pdb.id_information()?;
-
-    let mut modules = dbi.modules()?;
-    while let Some(module) = modules.next()? {
-
-        let info = match pdb.module_info(&module)? {
-            Some(info) => info,
-            None => {
-                //println!("  no module info");
-                continue;
-            }
+    fn next(&mut self) -> Option<u32> {
+        let text = match *self {
+            Addrs::Args(ref mut vals) => vals.next().map(Cow::from),
+            Addrs::Stdin(ref mut lines) => lines.next().map(Result::unwrap).map(Cow::from),
         };
-
-        let inlinees: BTreeMap<_, _> = info.inlinees()?.map(|i| Ok((i.index(), i))).collect()?;
-
-        let program = info.line_program()?;
-        let mut symbols = info.symbols()?;
-
-        let mut depth = 0;
-        let mut inc_next = false;
-
-        let mut proc_offsets = Vec::new();
-
-        while let Some(symbol) = symbols.next()? {
-
-            if inc_next {
-                depth += 1;
-            }
-
-            inc_next = symbol.starts_scope();
-            if symbol.ends_scope() {
-                depth -= 1;
-
-                if proc_offsets.last().map_or(false, |&(d, _)| d >= depth) {
-                    proc_offsets.pop();
-                }
-            }
-
-            match symbol.parse() {
-                Ok(SymbolData::Procedure(proc)) => {
-                    proc_offsets.push((depth, proc.offset));
-                    
-                    match proc.offset.to_rva(&address_map) {
-                        Some(start) if start.0 <= target && target < start.0 + proc.len => {
-                            let sign = if proc.global { "+" } else { "-" };
-                            println!("{} {:?} {:?} {} {:?} {}", sign, symbol.index(), proc.type_index, proc.name, proc.offset.to_rva(&address_map), proc.len);
-
-                            let mut lines = program.lines_at_offset(proc.offset).peekable();
-                            while let Some(line_info) = lines.next()? {
-                                let rva = line_info.offset.to_rva(&address_map).expect("invalid rva");
-                                let length = line_info.length;
-                                let file_info = program.get_file_info(line_info.file_index)?;
-                                let file_name = file_info.name.to_string_lossy(&string_table)?;
-                                match lines.peek()? {
-                                    Some(info) => {
-                                        if rva.0 <= target && info.offset.to_rva(&address_map).expect("invalid rva").0 > target {
-                                            println!("  {} {:?} {}:{}", rva, length, file_name, line_info.line_start);
-                                            break;
-                                        }
-                                    }
-                                    _ => println!("  {} {:?} {}:{}", rva, length, file_name, line_info.line_start),
-                                };
-                            }
-                        }
-                        _ => {}
-                    }
-
-                }
-                Ok(SymbolData::InlineSite(site)) => {
-                    let parent_offset = proc_offsets
-                        .last()
-                        .map(|&(_, offset)| offset).unwrap();
-
-                    // We can assume that inlinees will be listed in the inlinee table. If missing,
-                    // skip silently instead of erroring out. Missing a single inline function is
-                    // more acceptable in such a case than halting iteration completely.
-                    if let Some(inlinee) = inlinees.get(&site.inlinee) {
-                        // println!("Found inline parent_offset {:?} {:?} {:?}", parent_offset.to_rva(&address_map), site, inlinee);
-                        let line_iter = inlinee.lines(parent_offset, &site);
-                        let lines = collect_lines(line_iter, &program, &address_map, &string_table)?;
-                        for l in lines {
-                            if l.address <= target.into() && l.address + l.size.unwrap() > target.into() {
-                                println!("{:?} ({:x?} {:x} {:x?}) {:?}", l, l.address,target, l.address + l.size.unwrap(), site.inlinee);
-                                for i in ipi.iter().iterator() {
-                                    if let Ok(i) = i {
-                                        if i.index() == site.inlinee {
-                                            println!("{:?}", i.parse()?)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        text.as_ref()
+            .map(Cow::as_ref)
+            .map(parse_uint_from_hex_string)
     }
+}
 
-    Ok(())
+fn print_loc(file: &Option<Cow<str>>, line: Option<u32>, basenames: bool, llvm: bool) {
+    if let Some(file) = file {
+        let file: &str = &file;
+        let path = if basenames {
+            Path::new(Path::new(file).file_name().unwrap())
+        } else {
+            Path::new(file)
+        };
+        print!("{}:", path.display());
+        if llvm {
+            print!("{}:0", line.unwrap_or(0));
+        } else if let Some(line) = line {
+            print!("{}", line);
+        } else {
+            print!("?");
+        }
+        println!();
+    } else if llvm {
+        println!("??:0:0");
+    } else {
+        println!("??:?");
+    }
+}
+
+fn print_function(name: &str, _demangle: bool) {
+    // TODO: Implement demangling
+    print!("{}", name);
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let matches = App::new("hardliner")
+        .version("0.1")
+        .about("A fast addr2line clone")
+        .arg(
+            Arg::with_name("exe")
+                .short("e")
+                .long("exe")
+                .value_name("filename")
+                .help(
+                    "Specify the name of the executable for which addresses should be translated.",
+                )
+                .required(true),
+        )
+        .arg(
+            Arg::with_name("sup")
+                .long("sup")
+                .value_name("filename")
+                .help("Path to supplementary object file."),
+        )
+        .arg(
+            Arg::with_name("functions")
+                .short("f")
+                .long("functions")
+                .help("Display function names as well as file and line number information."),
+        )
+        .arg(
+            Arg::with_name("pretty")
+                .short("p")
+                .long("pretty-print")
+                .help(
+                    "Make the output more human friendly: each location are printed on \
+                     one line.",
+                ),
+        )
+        .arg(Arg::with_name("inlines").short("i").long("inlines").help(
+            "If the address belongs to a function that was inlined, the source \
+             information for all enclosing scopes back to the first non-inlined \
+             function will also be printed.",
+        ))
+        .arg(
+            Arg::with_name("addresses")
+                .short("a")
+                .long("addresses")
+                .help(
+                    "Display the address before the function name, file and line \
+                     number information.",
+                ),
+        )
+        .arg(
+            Arg::with_name("basenames")
+                .short("s")
+                .long("basenames")
+                .help("Display only the base of each file name."),
+        )
+        .arg(Arg::with_name("demangle").short("C").long("demangle").help(
+            "Demangle function names. \
+             Specifying a specific demangling style (like GNU addr2line) \
+             is not supported. (TODO)",
+        ))
+        .arg(
+            Arg::with_name("llvm")
+                .long("llvm")
+                .help("Display output in the same format as llvm-symbolizer."),
+        )
+        .arg(
+            Arg::with_name("addrs")
+                .takes_value(true)
+                .multiple(true)
+                .help("Addresses to use instead of reading from stdin."),
+        )
+        .get_matches();
 
-    let mut opts = Options::new();
-    opts.optflag("h", "help", "print this help menu");
-    let matches = match opts.parse(&args[1..]) {
-        Ok(m) => m,
-        Err(f) => panic!(f.to_string()),
-    };
+    let do_functions = matches.is_present("functions");
+    let do_inlines = matches.is_present("inlines");
+    let pretty = matches.is_present("pretty");
+    let print_addrs = matches.is_present("addresses");
+    let basenames = matches.is_present("basenames");
+    let demangle = matches.is_present("demangle");
+    let llvm = matches.is_present("llvm");
+    let path = matches.value_of("exe").unwrap();
 
-    let (filename, address) = if matches.free.len() == 2 {
-        (&matches.free[0], &matches.free[1])
-    } else {
-        //print_usage(&program, opts);
-        println!("specify path to a PDB");
-        return;
-    };
-    let address = address.trim_start_matches("0x");
-    let address = u32::from_str_radix(address, 16).unwrap();
+    let file = File::open(path).unwrap();
+    let map = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
+    let cursor = Cursor::new(map);
+    let mut pdb = pdb::PDB::open(cursor).unwrap();
 
-    match dump_pdb(&filename, address) {
-        Ok(_) => {}
-        Err(e) => {
-            writeln!(&mut std::io::stderr(), "error dumping PDB: {}", e).expect("stderr write");
+    let dbi = pdb.debug_information().unwrap();
+    let tpi = pdb.type_information().unwrap();
+    let ipi = pdb.id_information().unwrap();
+    let flags = pdb_addr2line::TypeFormatterFlags::default()
+        | pdb_addr2line::TypeFormatterFlags::NO_MEMBER_FUNCTION_STATIC;
+    let type_formatter = pdb_addr2line::TypeFormatter::new(&dbi, &tpi, &ipi, flags).unwrap();
+    let context_data = pdb_addr2line::ContextConstructionData::try_from_pdb(&mut pdb).unwrap();
+    let ctx = pdb_addr2line::Context::new(&context_data, &type_formatter).unwrap();
+
+    let stdin = std::io::stdin();
+    let addrs = matches
+        .values_of("addrs")
+        .map(Addrs::Args)
+        .unwrap_or_else(|| Addrs::Stdin(stdin.lock().lines()));
+
+    for probe in addrs {
+        if print_addrs {
+            if llvm {
+                print!("0x{:x}", probe);
+            } else {
+                print!("0x{:016x}", probe);
+            }
+            if pretty {
+                print!(": ");
+            } else {
+                println!();
+            }
         }
+
+        if do_functions || do_inlines {
+            let mut printed_anything = false;
+            let frames = ctx.find_frames(probe).unwrap().unwrap();
+            for (i, frame) in frames.frames.iter().enumerate() {
+                if pretty && i != 0 {
+                    print!(" (inlined by) ");
+                }
+
+                if do_functions {
+                    if let Some(func) = &frame.function {
+                        print_function(func, demangle);
+                    } else {
+                        print!("??");
+                    }
+
+                    if pretty {
+                        print!(" at ");
+                    } else {
+                        println!();
+                    }
+                }
+
+                print_loc(&frame.file, frame.line, basenames, llvm);
+
+                printed_anything = true;
+
+                if !do_inlines {
+                    break;
+                }
+            }
+
+            if !printed_anything {
+                if do_functions {
+                    print!("??");
+
+                    if pretty {
+                        print!(" at ");
+                    } else {
+                        println!();
+                    }
+                }
+
+                if llvm {
+                    println!("??:0:0");
+                } else {
+                    println!("??:?");
+                }
+            }
+        } else {
+            let frames = ctx.find_frames(probe).unwrap().unwrap();
+            let frame = &frames.frames[0];
+            print_loc(&frame.file, frame.line, basenames, llvm);
+        }
+
+        if llvm {
+            println!();
+        }
+        std::io::stdout().flush().unwrap();
     }
 }

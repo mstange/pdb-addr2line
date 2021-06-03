@@ -14,3 +14,5 @@ range-collections = "0.1.1"
 [dev-dependencies]
 getopts = "0.2.21"
 msvc-demangler = "0.8.0"
+clap = "2"
+memmap2 = "0.2.2"
