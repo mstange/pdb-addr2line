@@ -45,3 +45,42 @@ fn look_up_addresses<'s, S: pdb::Source<'s> + 's>(stream: S, addresses: &[u32]) 
     Ok(())
 }
 ```
+
+# Command-line usage
+
+This repository also contains a CLI executable mirrored after addr2line.
+You can install it using `cargo install`:
+
+```
+cargo install --examples pdb-addr2line
+```
+
+Here are some example uses:
+
+```
+$ curl -o dcomp.pdb -L "https://msdl.microsoft.com/download/symbols/dcomp.pdb/648B8DD0780A4E22FA7FA89B84633C231/dcomp.pdb"
+$ pdb-addr2line --exe dcomp.pdb -f 0x59aa0 0x52340 0x467e8
+Windows::UI::Composition::Compositor::Api::CreateScalarKeyFrameAnimation
+??:?
+std::map<unsigned int,Windows::UI::Composition::AnimationLoggingManager::ReferencedObject,std::less<unsigned int>,std::allocator<std::pair<unsigned int const ,Windows::UI::Composition::AnimationLoggingManager::ReferencedObject> > >::_Try_emplace<unsigned int const &>
+??:?
+DirectComposition::CVirtualSurfacePrimitive::CVirtualSurfacePrimitive
+??:?
+```
+
+```
+$ curl -o mozglue.pdb -L "https://github.com/mstange/profiler-get-symbols/raw/master/fixtures/win64-ci/mozglue.pdb"
+$ pdb-addr2line --exe mozglue.pdb -fi 0x3b9fb
+mozilla::JSONWriter::StartCollection(char const*, char const*, mozilla::JSONWriter::CollectionStyle)
+/builds/worker/workspace/obj-build/dist/include/mozilla/JSONWriter.h:318
+mozilla::JSONWriter::StartArrayProperty(char const*, mozilla::JSONWriter::CollectionStyle)
+/builds/worker/workspace/obj-build/dist/include/mozilla/JSONWriter.h:417
+mozilla::JSONWriter::StartArrayElement(mozilla::JSONWriter::CollectionStyle)
+/builds/worker/workspace/obj-build/dist/include/mozilla/JSONWriter.h:422
+mozilla::baseprofiler::AutoArraySchemaWriter::AutoArraySchemaWriter(mozilla::baseprofiler::SpliceableJSONWriter&, mozilla::baseprofiler::UniqueJSONStrings&)
+/builds/worker/checkouts/gecko/mozglue/baseprofiler/core/ProfileBufferEntry.cpp:141
+mozilla::baseprofiler::WriteSample(mozilla::baseprofiler::SpliceableJSONWriter&, mozilla::baseprofiler::UniqueJSONStrings&, mozilla::baseprofiler::ProfileSample const&)
+/builds/worker/checkouts/gecko/mozglue/baseprofiler/core/ProfileBufferEntry.cpp:361
+mozilla::baseprofiler::ProfileBuffer::StreamSamplesToJSON::<unnamed-tag>::operator()(mozilla::ProfileChunkedBuffer::Reader*) const
+/builds/worker/checkouts/gecko/mozglue/baseprofiler/core/ProfileBufferEntry.cpp:809
+```
