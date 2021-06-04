@@ -70,11 +70,11 @@ DirectComposition::CVirtualSurfacePrimitive::CVirtualSurfacePrimitive
 
 ```
 $ curl -o mozglue.pdb -L "https://github.com/mstange/profiler-get-symbols/raw/master/fixtures/win64-ci/mozglue.pdb"
-$ pdb-addr2line -e mozglue.pdb -pfi 0x3b9fb
-mozilla::JSONWriter::StartCollection(char const*, char const*, mozilla::JSONWriter::CollectionStyle) at /builds/worker/workspace/obj-build/dist/include/mozilla/JSONWriter.h:318
- (inlined by) mozilla::JSONWriter::StartArrayProperty(char const*, mozilla::JSONWriter::CollectionStyle) at /builds/worker/workspace/obj-build/dist/include/mozilla/JSONWriter.h:417
- (inlined by) mozilla::JSONWriter::StartArrayElement(mozilla::JSONWriter::CollectionStyle) at /builds/worker/workspace/obj-build/dist/include/mozilla/JSONWriter.h:422
- (inlined by) mozilla::baseprofiler::AutoArraySchemaWriter::AutoArraySchemaWriter(mozilla::baseprofiler::SpliceableJSONWriter&, mozilla::baseprofiler::UniqueJSONStrings&) at /builds/worker/checkouts/gecko/mozglue/baseprofiler/core/ProfileBufferEntry.cpp:141
- (inlined by) mozilla::baseprofiler::WriteSample(mozilla::baseprofiler::SpliceableJSONWriter&, mozilla::baseprofiler::UniqueJSONStrings&, mozilla::baseprofiler::ProfileSample const&) at /builds/worker/checkouts/gecko/mozglue/baseprofiler/core/ProfileBufferEntry.cpp:361
- (inlined by) mozilla::baseprofiler::ProfileBuffer::StreamSamplesToJSON::<unnamed-tag>::operator()(mozilla::ProfileChunkedBuffer::Reader*) const at /builds/worker/checkouts/gecko/mozglue/baseprofiler/core/ProfileBufferEntry.cpp:809
+$ pdb-addr2line -e mozglue.pdb -psfi 0x3b9fb
+mozilla::JSONWriter::StartCollection(char const*, char const*, mozilla::JSONWriter::CollectionStyle) at JSONWriter.h:318
+ (inlined by) mozilla::JSONWriter::StartArrayProperty(char const*, mozilla::JSONWriter::CollectionStyle) at JSONWriter.h:417
+ (inlined by) mozilla::JSONWriter::StartArrayElement(mozilla::JSONWriter::CollectionStyle) at JSONWriter.h:422
+ (inlined by) mozilla::baseprofiler::AutoArraySchemaWriter::AutoArraySchemaWriter(mozilla::baseprofiler::SpliceableJSONWriter&, mozilla::baseprofiler::UniqueJSONStrings&) at ProfileBufferEntry.cpp:141
+ (inlined by) mozilla::baseprofiler::WriteSample(mozilla::baseprofiler::SpliceableJSONWriter&, mozilla::baseprofiler::UniqueJSONStrings&, mozilla::baseprofiler::ProfileSample const&) at ProfileBufferEntry.cpp:361
+ (inlined by) mozilla::baseprofiler::ProfileBuffer::StreamSamplesToJSON::<unnamed-tag>::operator()(mozilla::ProfileChunkedBuffer::Reader*) const at ProfileBufferEntry.cpp:809
 ```
