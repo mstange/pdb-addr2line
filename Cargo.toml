@@ -23,7 +23,7 @@ thiserror = "1.0"
 clap = "2"
 getopts = "0.2.21"
 memmap2 = "0.2.2"
-msvc-demangler = "0.8.0"
+msvc-demangler = "0.9.0"
 
 [[example]]
 name = "pdb-addr2line"
