@@ -1,3 +1,6 @@
+[![crates.io page](http://meritbadge.herokuapp.com/pdb-addr2line)](https://crates.io/crates/pdb-addr2line)
+[![docs.rs page](https://docs.rs/pdb-addr2line/badge.svg)](https://docs.rs/pdb-addr2line/)
+
 # pdb-addr2line
 
 Resolve addresses to function names, and to file name and line number
