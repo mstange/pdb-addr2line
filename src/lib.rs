@@ -642,9 +642,6 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         call_depth: u16,
         lines: &mut Vec<InlineRange>,
     ) -> Result<RangeSet<u32>> {
-        let mut name = String::new();
-        let _ = self.type_formatter.write_id(&mut name, site.inlinee);
-
         let mut ranges = RangeSet::empty();
         let mut file_index = None;
         if let Some(inlinee) = inlinees.get(&site.inlinee) {
