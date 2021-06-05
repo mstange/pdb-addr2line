@@ -5,6 +5,7 @@ use std::io::{BufRead, Lines, StdinLock, Write};
 use std::path::Path;
 
 use clap::{App, Arg, Values};
+use msvc_demangler::DemangleFlags;
 use pdb_addr2line::pdb;
 
 fn parse_uint_from_hex_string(string: &str) -> u32 {
@@ -58,9 +59,25 @@ fn print_loc(file: &Option<Cow<str>>, line: Option<u32>, basenames: bool, llvm: 
     }
 }
 
-fn print_function(name: &str, _demangle: bool) {
-    // TODO: Implement demangling
-    print!("{}", name);
+fn print_function(name: &str, demangle: bool) {
+    if demangle && name.starts_with('?') {
+        let flags = DemangleFlags::NO_ACCESS_SPECIFIERS
+            | DemangleFlags::NO_FUNCTION_RETURNS
+            | DemangleFlags::NO_MEMBER_TYPE
+            | DemangleFlags::NO_MS_KEYWORDS
+            | DemangleFlags::NO_THISTYPE
+            | DemangleFlags::NO_CLASS_TYPE
+            | DemangleFlags::SPACE_AFTER_COMMA
+            | DemangleFlags::HUG_TYPE;
+        print!(
+            "{}",
+            msvc_demangler::demangle(name, flags)
+                .as_deref()
+                .unwrap_or(name)
+        );
+    } else {
+        print!("{}", name);
+    }
 }
 
 fn main() {
