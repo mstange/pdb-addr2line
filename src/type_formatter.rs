@@ -1,10 +1,13 @@
 use bitflags::bitflags;
 use pdb::{
     ArgumentList, ArrayType, ClassKind, ClassType, DebugInformation, FallibleIterator,
-    FunctionAttributes, IdData, IdFinder, IdIndex, IdInformation, MachineType, MemberFunctionType,
-    ModifierType, PointerMode, PointerType, PrimitiveKind, PrimitiveType, ProcedureType, RawString,
-    TypeData, TypeFinder, TypeIndex, TypeInformation, UnionType, Variant,
+    FunctionAttributes, IdData, IdIndex, IdInformation, Item, ItemFinder, ItemIndex, ItemIter,
+    MachineType, MemberFunctionType, ModifierType, PointerMode, PointerType, PrimitiveKind,
+    PrimitiveType, ProcedureType, RawString, TypeData, TypeFinder, TypeIndex, TypeInformation,
+    TypeIter, UnionType, Variant,
 };
+use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -69,22 +72,6 @@ impl Default for TypeFormatterFlags {
     }
 }
 
-#[derive(Eq, PartialEq)]
-enum PtrToClassKind {
-    PtrToGivenClass {
-        /// If true, the pointer is a "pointer to const ClassType".
-        constant: bool,
-    },
-    OtherType,
-}
-
-#[derive(Debug)]
-struct PtrAttributes {
-    is_pointer_const: bool,
-    is_pointee_const: bool,
-    mode: PointerMode,
-}
-
 /// Allows printing function signatures, for example for use in stack traces.
 ///
 /// Procedure symbols in PDBs usually have a name string which only includes the function name,
@@ -95,11 +82,8 @@ struct PtrAttributes {
 /// [`IdData`]'s name string again only contains the raw function name but no arguments and also
 /// no namespace or class name. [`TypeFormatter`] handles those, too, in [`TypeFormatter::write_id`].
 pub struct TypeFormatter<'t> {
-    type_finder: TypeFinder<'t>,
-    id_finder: IdFinder<'t>,
-
-    /// A hashmap that maps a type's (unique) name to its type size.
-    forward_ref_sizes: HashMap<RawString<'t>, u32>,
+    type_map: RefCell<TypeMapWithSize<'t>>,
+    id_map: RefCell<IdMap<'t>>,
 
     ptr_size: u32,
     flags: TypeFormatterFlags,
@@ -113,45 +97,16 @@ impl<'t> TypeFormatter<'t> {
         id_info: &'t IdInformation<'_>,
         flags: TypeFormatterFlags,
     ) -> std::result::Result<Self, pdb::Error> {
-        let mut type_iter = type_info.iter();
-        let mut type_finder = type_info.finder();
+        let type_map = TypeMapWithSize {
+            iter: type_info.iter(),
+            finder: type_info.finder(),
+            forward_ref_sizes: HashMap::new(),
+        };
 
-        // When computing type sizes, special care must be taken for types which are
-        // marked as "forward references": For these types, the size must be taken from
-        // the occurrence of the type with the same (unique) name which is not marked as
-        // a forward reference.
-        // In order to be able to look up these sizes, we create a map upfront, which
-        // contains all sizes  for non-forward_reference types.
-        // Type sizes are needed when computing array lengths based on byte lengths, when
-        // printing array types. They are also needed for the public get_type_size method.
-        let mut forward_ref_sizes = HashMap::new();
-
-        while let Some(item) = type_iter.next()? {
-            type_finder.update(&type_iter);
-            if let Ok(type_data) = item.parse() {
-                match type_data {
-                    TypeData::Class(t) => {
-                        if !t.properties.forward_reference() {
-                            let name = t.unique_name.unwrap_or(t.name);
-                            forward_ref_sizes.insert(name, t.size.into());
-                        }
-                    }
-                    TypeData::Union(t) => {
-                        if !t.properties.forward_reference() {
-                            let name = t.unique_name.unwrap_or(t.name);
-                            forward_ref_sizes.insert(name, t.size);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        let mut id_finder = id_info.finder();
-        let mut id_iter = id_info.iter();
-        while id_iter.next()?.is_some() {
-            id_finder.update(&id_iter);
-        }
+        let id_map = IdMap {
+            iter: id_info.iter(),
+            finder: id_info.finder(),
+        };
 
         let ptr_size = match debug_info.machine_type()? {
             MachineType::Amd64 | MachineType::Arm64 | MachineType::Ia64 | MachineType::RiscV64 => 8,
@@ -160,9 +115,8 @@ impl<'t> TypeFormatter<'t> {
         };
 
         Ok(Self {
-            type_finder,
-            id_finder,
-            forward_ref_sizes,
+            type_map: RefCell::new(type_map),
+            id_map: RefCell::new(id_map),
             ptr_size,
             flags,
         })
@@ -258,44 +212,44 @@ impl<'t> TypeFormatter<'t> {
         Ok(())
     }
 
-    fn resolve_type_index(&self, index: TypeIndex) -> Result<TypeData> {
-        let item = self.type_finder.find(index).unwrap();
+    fn resolve_type_index(&self, index: TypeIndex) -> Result<TypeData<'t>> {
+        let item = self.type_map.borrow_mut().try_get(index)?;
         Ok(item.parse()?)
     }
 
-    fn resolve_id_index(&self, index: IdIndex) -> Result<IdData> {
-        let item = self.id_finder.find(index).unwrap();
+    fn resolve_id_index(&self, index: IdIndex) -> Result<IdData<'t>> {
+        let item = self.id_map.borrow_mut().try_get(index)?;
         Ok(item.parse()?)
     }
 
-    fn get_class_size(&self, class_type: &ClassType) -> u32 {
+    fn get_class_size(&self, class_type: &ClassType<'t>) -> u32 {
         if class_type.properties.forward_reference() {
             let name = class_type.unique_name.unwrap_or(class_type.name);
 
             // Sometimes the name will not be in self.forward_ref_sizes - this can occur for
             // the empty struct, which can be a forward reference to itself!
-            *self
-                .forward_ref_sizes
-                .get(&name)
-                .unwrap_or(&class_type.size.into())
+            self.type_map
+                .borrow_mut()
+                .get_size_for_name(name)
+                .unwrap_or(class_type.size as u32)
         } else {
             class_type.size.into()
         }
     }
 
-    fn get_union_size(&self, union_type: &UnionType) -> u32 {
+    fn get_union_size(&self, union_type: &UnionType<'t>) -> u32 {
         if union_type.properties.forward_reference() {
             let name = union_type.unique_name.unwrap_or(union_type.name);
-            *self
-                .forward_ref_sizes
-                .get(&name)
-                .unwrap_or(&union_type.size)
+            self.type_map
+                .borrow_mut()
+                .get_size_for_name(name)
+                .unwrap_or(union_type.size)
         } else {
             union_type.size
         }
     }
 
-    fn get_data_size(&self, type_data: &TypeData) -> u32 {
+    fn get_data_size(&self, type_data: &TypeData<'t>) -> u32 {
         match type_data {
             TypeData::Primitive(t) => {
                 if t.indirection.is_some() {
@@ -665,7 +619,7 @@ impl<'t> TypeFormatter<'t> {
 
     /// The returned Vec has the array dimensions in bytes, with the "lower" dimensions
     /// aggregated into the "higher" dimensions.
-    fn get_array_info(&self, array: ArrayType) -> Result<(Vec<u32>, TypeData)> {
+    fn get_array_info(&self, array: ArrayType) -> Result<(Vec<u32>, TypeData<'t>)> {
         // For an array int[12][34] it'll be represented as "int[34] *".
         // For any reason the 12 is lost...
         // The internal representation is: Pointer{ base: Array{ base: int, dim: 34 * sizeof(int)} }
@@ -887,5 +841,137 @@ impl<'t> TypeFormatter<'t> {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Eq, PartialEq)]
+enum PtrToClassKind {
+    PtrToGivenClass {
+        /// If true, the pointer is a "pointer to const ClassType".
+        constant: bool,
+    },
+    OtherType,
+}
+
+#[derive(Debug)]
+struct PtrAttributes {
+    is_pointer_const: bool,
+    is_pointee_const: bool,
+    mode: PointerMode,
+}
+
+struct ItemMap<'t, I: ItemIndex> {
+    iter: ItemIter<'t, I>,
+    finder: ItemFinder<'t, I>,
+}
+
+impl<'t, I> ItemMap<'t, I>
+where
+    I: ItemIndex,
+{
+    pub fn try_get(&mut self, index: I) -> std::result::Result<Item<'t, I>, pdb::Error> {
+        if index <= self.finder.max_index() {
+            return Ok(self.finder.find(index)?);
+        }
+
+        while let Some(item) = self.iter.next()? {
+            self.finder.update(&self.iter);
+            match item.index().partial_cmp(&index) {
+                Some(Ordering::Equal) => return Ok(item),
+                Some(Ordering::Greater) => break,
+                _ => continue,
+            }
+        }
+
+        Err(pdb::Error::TypeNotFound(index.into()))
+    }
+}
+
+type IdMap<'t> = ItemMap<'t, IdIndex>;
+
+struct TypeMapWithSize<'t> {
+    iter: TypeIter<'t>,
+    finder: TypeFinder<'t>,
+
+    /// A hashmap that maps a type's (unique) name to its type size.
+    ///
+    /// When computing type sizes, special care must be taken for types which are
+    /// marked as "forward references": For these types, the size must be taken from
+    /// the occurrence of the type with the same (unique) name which is not marked as
+    /// a forward reference.
+    ///
+    /// In order to be able to look up these sizes, we create a map which
+    /// contains all sizes for non-forward_reference types. This map is populated on
+    /// demand as the type iter is advanced.
+    ///
+    /// Type sizes are needed when computing array lengths based on byte lengths, when
+    /// printing array types. They are also needed for the public get_type_size method.
+    forward_ref_sizes: HashMap<RawString<'t>, u32>,
+}
+
+impl<'t> TypeMapWithSize<'t> {
+    pub fn try_get(
+        &mut self,
+        index: TypeIndex,
+    ) -> std::result::Result<Item<'t, TypeIndex>, pdb::Error> {
+        if index <= self.finder.max_index() {
+            return Ok(self.finder.find(index)?);
+        }
+
+        while let Some(item) = self.iter.next()? {
+            self.finder.update(&self.iter);
+            self.update_forward_ref_size_map(&item);
+            match item.index().partial_cmp(&index) {
+                Some(Ordering::Equal) => return Ok(item),
+                Some(Ordering::Greater) => break,
+                _ => continue,
+            }
+        }
+
+        Err(pdb::Error::TypeNotFound(index.into()))
+    }
+
+    pub fn get_size_for_name(&mut self, name: RawString<'t>) -> Option<u32> {
+        if let Some(size) = self.forward_ref_sizes.get(&name) {
+            return Some(*size);
+        }
+
+        while let Some(item) = self.iter.next().ok()? {
+            self.finder.update(&self.iter);
+            let s = self.update_forward_ref_size_map(&item);
+            if let Some((found_name, found_size)) = s {
+                if found_name == name {
+                    return Some(found_size);
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn update_forward_ref_size_map(
+        &mut self,
+        item: &Item<'t, TypeIndex>,
+    ) -> Option<(RawString<'t>, u32)> {
+        if let Ok(type_data) = item.parse() {
+            match type_data {
+                TypeData::Class(t) => {
+                    if !t.properties.forward_reference() {
+                        let name = t.unique_name.unwrap_or(t.name);
+                        self.forward_ref_sizes.insert(name, t.size.into());
+                        return Some((name, t.size.into()));
+                    }
+                }
+                TypeData::Union(t) => {
+                    if !t.properties.forward_reference() {
+                        let name = t.unique_name.unwrap_or(t.name);
+                        self.forward_ref_sizes.insert(name, t.size);
+                        return Some((name, t.size));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 }
