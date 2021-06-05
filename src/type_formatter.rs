@@ -575,12 +575,11 @@ impl<'t> TypeFormatter<'t> {
     }
 
     fn emit_ptr(&self, w: &mut impl Write, ptr: PointerType, is_const: bool) -> Result<()> {
-        let mut attributes = Vec::new();
-        attributes.push(PtrAttributes {
+        let mut attributes = vec![PtrAttributes {
             is_pointer_const: ptr.attributes.is_const() || is_const,
             is_pointee_const: false,
             mode: ptr.attributes.pointer_mode(),
-        });
+        }];
         let mut ptr = ptr;
         loop {
             let type_data = self.resolve_type_index(ptr.underlying_type)?;
@@ -871,7 +870,7 @@ where
 {
     pub fn try_get(&mut self, index: I) -> std::result::Result<Item<'t, I>, pdb::Error> {
         if index <= self.finder.max_index() {
-            return Ok(self.finder.find(index)?);
+            return self.finder.find(index);
         }
 
         while let Some(item) = self.iter.next()? {
@@ -915,7 +914,7 @@ impl<'t> TypeMapWithSize<'t> {
         index: TypeIndex,
     ) -> std::result::Result<Item<'t, TypeIndex>, pdb::Error> {
         if index <= self.finder.max_index() {
-            return Ok(self.finder.find(index)?);
+            return self.finder.find(index);
         }
 
         while let Some(item) = self.iter.next()? {
