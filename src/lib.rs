@@ -63,6 +63,7 @@ use range_collections::RangeSet;
 use std::cmp::Ordering;
 use std::collections::btree_map::Entry;
 use std::ops::Bound;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::{borrow::Cow, cell::RefCell, collections::BTreeMap};
 
@@ -199,6 +200,7 @@ pub struct Context<'a: 't, 's, 't> {
     functions: Vec<BasicFunctionInfo<'a>>,
     procedure_cache: RefCell<ProcedureCache>,
     module_cache: RefCell<BTreeMap<u16, Rc<ExtendedModuleInfo<'a>>>>,
+    inline_name_cache: RefCell<BTreeMap<IdIndex, Option<Rc<String>>>>,
 }
 
 impl<'a, 's, 't> Context<'a, 's, 't> {
@@ -286,6 +288,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
             functions,
             procedure_cache: RefCell::new(Default::default()),
             module_cache: RefCell::new(BTreeMap::new()),
+            inline_name_cache: RefCell::new(BTreeMap::new()),
         })
     }
 
@@ -412,11 +415,10 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                 Ok(index) => (&inline_ranges[index], &inline_ranges[index + 1..]),
                 Err(_) => break,
             };
-            let mut name = String::new();
-            let res = self
-                .type_formatter
-                .write_id(&mut name, inline_range.inlinee);
-            let function = res.ok().map(|_| name);
+            let function = match self.get_inline_name(inline_range.inlinee) {
+                Some(name) => Some(name.deref().clone()),
+                None => None,
+            };
             let file = inline_range
                 .file_index
                 .and_then(|file_index| self.resolve_filename(line_program, file_index));
@@ -717,6 +719,22 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         }
 
         Ok(ranges)
+    }
+
+    fn get_inline_name(&self, id_index: IdIndex) -> Option<Rc<String>> {
+        let mut cache = self.inline_name_cache.borrow_mut();
+        cache
+            .entry(id_index)
+            .or_insert_with(|| {
+                let mut name = String::new();
+                let res = self.type_formatter.write_id(&mut name, id_index);
+                match res {
+                    Ok(()) => Some(Rc::new(name)),
+                    Err(_) => None,
+                }
+            })
+            .deref()
+            .clone()
     }
 
     fn resolve_filename(
