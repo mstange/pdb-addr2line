@@ -16,10 +16,12 @@ strings independently from a `Context`.
 
 To create a `Context`, use `ContextPdbData`.
 
+The implementation makes use of the excellent [`pdb` crate](https://crates.io/crates/pdb).
+
 ## Example
 
 ```rust
-use pdb_addr2line::pdb;
+use pdb_addr2line::pdb; // (this is a re-export of the pdb crate)
 
 fn look_up_addresses<'s, S: pdb::Source<'s> + 's>(stream: S, addresses: &[u32]) -> pdb::Result<()> {
     let mut pdb = pdb::PDB::open(stream)?;
@@ -48,7 +50,7 @@ fn look_up_addresses<'s, S: pdb::Source<'s> + 's>(stream: S, addresses: &[u32]) 
 
 # Command-line usage
 
-This repository also contains a CLI executable mirrored after addr2line.
+This repository also contains a CLI executable modelled after addr2line.
 You can install it using `cargo install`:
 
 ```
@@ -78,3 +80,21 @@ mozilla::JSONWriter::StartCollection(char const*, char const*, mozilla::JSONWrit
  (inlined by) mozilla::baseprofiler::WriteSample(mozilla::baseprofiler::SpliceableJSONWriter&, mozilla::baseprofiler::UniqueJSONStrings&, mozilla::baseprofiler::ProfileSample const&) at ProfileBufferEntry.cpp:361
  (inlined by) mozilla::baseprofiler::ProfileBuffer::StreamSamplesToJSON::<unnamed-tag>::operator()(mozilla::ProfileChunkedBuffer::Reader*) const at ProfileBufferEntry.cpp:809
 ```
+
+# Performance
+
+`pdb-addr2line` optimizes for speed over memory by caching parsed information.
+The debug information about inlines, files and line numbers is parsed lazily where possible.
+
+## License
+
+Licensed under either of
+
+  * Apache License, Version 2.0 ([`LICENSE-APACHE`](./LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+  * MIT license ([`LICENSE-MIT`](./LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
