@@ -1,4 +1,4 @@
-//! Resolve addresses to function names, and to file name and line number
+//! Resolve addresses to f function: (), file: (), line: ()  function: (), file: (), line: ()  function: (), file: (), line: () unction names, and to file name and line number
 //! information, with the help of a PDB file. Inline stacks are supported.
 //!
 //! The API of this crate is intended to be similar to the API of the
@@ -45,6 +45,8 @@ pub use maybe_owned;
 pub use pdb;
 
 mod type_formatter;
+use pdb::PublicSymbol;
+use pdb::SymbolTable;
 pub use type_formatter::*;
 
 use maybe_owned::MaybeOwned;
@@ -87,6 +89,7 @@ pub struct ContextPdbData<'s> {
     modules: Vec<ModuleInfo<'s>>,
     address_map: AddressMap<'s>,
     string_table: Option<StringTable<'s>>,
+    global_symbols: SymbolTable<'s>,
     debug_info: DebugInformation<'s>,
     type_info: TypeInformation<'s>,
     id_info: IdInformation<'s>,
@@ -97,6 +100,7 @@ impl<'s> ContextPdbData<'s> {
     /// streams and stores them in the [`ContextPdbData`]. Most importantly, it builds
     /// a list of all the [`ModuleInfo`](pdb::ModuleInfo) objects in the PDB.
     pub fn try_from_pdb<S: Source<'s> + 's>(pdb: &mut PDB<'s, S>) -> Result<Self> {
+        let global_symbols = pdb.global_symbols()?;
         let debug_info = pdb.debug_information()?;
         let type_info = pdb.type_information()?;
         let id_info = pdb.id_information()?;
@@ -116,6 +120,7 @@ impl<'s> ContextPdbData<'s> {
 
         Ok(Self {
             modules,
+            global_symbols,
             debug_info,
             type_info,
             id_info,
@@ -139,6 +144,7 @@ impl<'s> ContextPdbData<'s> {
 
         Context::new_from_parts(
             &self.address_map,
+            &self.global_symbols,
             self.string_table.as_ref(),
             &self.modules,
             MaybeOwned::Owned(type_formatter),
@@ -146,26 +152,28 @@ impl<'s> ContextPdbData<'s> {
     }
 }
 
-/// Basic information about a procedure (a function or a method).
+/// Basic information about a function.
 #[derive(Clone)]
-pub struct Procedure {
-    /// The start address of the procedure.
+pub struct Function {
+    /// The start address of the function, as a relative address (rva).
     pub start_rva: u32,
-    /// The end address of the procedure.
-    pub end_rva: u32,
+    /// The end address of the function, if known.
+    pub end_rva: Option<u32>,
     /// The function name. `None` if there was an error during stringification.
+    /// If this function is based on a public symbol, the consumer may need to demangle
+    /// ("undecorate") the name. This can be detected based on a leading '?' byte.
     pub function: Option<String>,
 }
 
 /// The result of an address lookup from [`Context::find_frames`].
 #[derive(Clone)]
-pub struct ProcedureFrames<'a> {
-    /// The start address of the procedure which contained the looked-up address.
+pub struct FunctionFrames<'a> {
+    /// The start address of the function which contained the looked-up address.
     pub start_rva: u32,
-    /// The end address of the procedure which contained the looked-up address.
-    pub end_rva: u32,
+    /// The end address of the function which contained the looked-up address, if known.
+    pub end_rva: Option<u32>,
     /// The inline stack at the looked-up address, ordered from inside to outside.
-    /// Always contains at least one entry: the last element is always the procedure
+    /// Always contains at least one entry: the last element is always the function
     /// which contains the looked-up address.
     pub frames: Vec<Frame<'a>>,
 }
@@ -188,7 +196,7 @@ pub struct Context<'a: 't, 's, 't> {
     string_table: Option<&'a StringTable<'s>>,
     type_formatter: MaybeOwned<'a, TypeFormatter<'t>>,
     modules: &'a [ModuleInfo<'s>],
-    procedures: Vec<BasicProcedureInfo<'a>>,
+    functions: Vec<BasicFunctionInfo<'a>>,
     procedure_cache: RefCell<ProcedureCache>,
     module_cache: RefCell<BTreeMap<u16, Rc<ExtendedModuleInfo<'a>>>>,
 }
@@ -202,12 +210,37 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     /// from repeatedly parsing the same streams.
     pub fn new_from_parts(
         address_map: &'a AddressMap<'s>,
+        global_symbols: &'a SymbolTable<'s>,
         string_table: Option<&'a StringTable<'s>>,
         modules: &'a [ModuleInfo<'s>],
         type_formatter: MaybeOwned<'a, TypeFormatter<'t>>,
     ) -> Result<Self> {
-        let mut procedures = Vec::new();
+        let mut functions = Vec::new();
 
+        // Start with the public function symbols.
+        let mut symbol_iter = global_symbols.iter();
+        while let Some(symbol) = symbol_iter.next()? {
+            if let Ok(SymbolData::Public(PublicSymbol {
+                function: true,
+                name,
+                offset,
+                ..
+            })) = symbol.parse()
+            {
+                let start_rva = match offset.to_rva(&address_map) {
+                    Some(rva) => rva.0,
+                    None => continue,
+                };
+                functions.push(BasicFunctionInfo {
+                    start_rva,
+                    end_rva: None,
+                    name,
+                    procedure_symbol_info: None,
+                });
+            }
+        }
+
+        // Then, add functions.
         for (module_index, module_info) in modules.iter().enumerate() {
             let mut symbols_iter = module_info.symbols()?;
             while let Some(symbol) = symbols_iter.next()? {
@@ -220,15 +253,17 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                         None => continue,
                     };
 
-                    procedures.push(BasicProcedureInfo {
+                    functions.push(BasicFunctionInfo {
                         start_rva,
-                        end_rva: start_rva + proc.len,
-                        module_index: module_index as u16,
-                        symbol_index: symbol.index(),
-                        end_symbol_index: proc.end,
-                        offset: proc.offset,
+                        end_rva: Some(start_rva + proc.len),
                         name: proc.name,
-                        type_index: proc.type_index,
+                        procedure_symbol_info: Some(ProcedureSymbolInfo {
+                            module_index: module_index as u16,
+                            symbol_index: symbol.index(),
+                            end_symbol_index: proc.end,
+                            offset: proc.offset,
+                            type_index: proc.type_index,
+                        }),
                     });
                 }
             }
@@ -239,31 +274,31 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         // we'd like to keep the last instance that we encountered in the original order.
         // dedup_by_key keeps the *first* element of consecutive duplicates, so we reverse first
         // and then use a stable sort before we de-duplicate.
-        procedures.reverse();
-        procedures.sort_by_key(|p| p.start_rva);
-        procedures.dedup_by_key(|p| p.start_rva);
+        functions.reverse();
+        functions.sort_by_key(|p| p.start_rva);
+        functions.dedup_by_key(|p| p.start_rva);
 
         Ok(Self {
             address_map,
             string_table,
             type_formatter,
             modules,
-            procedures,
+            functions,
             procedure_cache: RefCell::new(Default::default()),
             module_cache: RefCell::new(BTreeMap::new()),
         })
     }
 
-    /// The number of procedures found in the modules. If the PDB file lists
-    /// multiple procedures sharing the same rva range, the shared range is only
-    /// counted as one procedure. In other words, this count is post-deduplication.
-    pub fn procedure_count(&self) -> usize {
-        self.procedures.len()
+    /// The number of functions found in the modules. If the PDB file lists
+    /// multiple functions sharing the same rva range, the shared range is only
+    /// counted as one function. In other words, this count is post-deduplication.
+    pub fn function_count(&self) -> usize {
+        self.functions.len()
     }
 
-    /// Iterate over all procedures in the modules.
-    pub fn iter_procedures(&self) -> ProcedureIter<'_, 'a, 's, 't> {
-        ProcedureIter {
+    /// Iterate over all functions in the modules.
+    pub fn functions(&self) -> FunctionIter<'_, 'a, 's, 't> {
+        FunctionIter {
             context: self,
             cur_index: 0,
         }
@@ -272,13 +307,13 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     /// Find the procedure (function or method) whose code contains the provided address.
     /// The return value only contains the function name and the rva range, but
     /// no file or line information.
-    pub fn find_procedure(&self, probe: u32) -> Result<Option<Procedure>> {
-        let proc = match self.lookup_proc(probe) {
+    pub fn find_procedure(&self, probe: u32) -> Result<Option<Function>> {
+        let proc = match self.lookup_function(probe) {
             Some(proc) => proc,
             None => return Ok(None),
         };
-        let function = (*self.get_procedure_name(proc)).clone();
-        Ok(Some(Procedure {
+        let function = (*self.get_function_name(proc)).clone();
+        Ok(Some(Function {
             start_rva: proc.start_rva,
             end_rva: proc.end_rva,
             function,
@@ -291,10 +326,31 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     /// into the procedure by the compiler, at that address.
     ///
     /// A lot of information is cached so that repeated calls are fast.
-    pub fn find_frames(&self, probe: u32) -> Result<Option<ProcedureFrames>> {
-        let proc = match self.lookup_proc(probe) {
-            Some(proc) => proc,
+    pub fn find_frames(&self, probe: u32) -> Result<Option<FunctionFrames>> {
+        let func = match self.lookup_function(probe) {
+            Some(func) => func,
             None => return Ok(None),
+        };
+
+        let start_rva = func.start_rva;
+
+        let function = (*self.get_function_name(func)).clone();
+
+        let proc = match &func.procedure_symbol_info {
+            Some(proc) => proc,
+            None => {
+                // This is a public symbol. We only have the function name and no file / line info,
+                // and no inline frames.
+                return Ok(Some(FunctionFrames {
+                    start_rva,
+                    end_rva: None,
+                    frames: vec![Frame {
+                        function,
+                        file: None,
+                        line: None,
+                    }],
+                }));
+            }
         };
 
         let module_info = &self.modules[proc.module_index as usize];
@@ -302,8 +358,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         let line_program = &module.line_program;
         let inlinees = &module.inlinees;
 
-        let function = (*self.get_procedure_name(proc)).clone();
-        let lines = &self.get_procedure_lines(proc, line_program)?[..];
+        let lines = &self.get_procedure_lines(start_rva, proc, line_program)?[..];
         let search = match lines.binary_search_by_key(&probe, |li| li.start_rva) {
             Err(0) => None,
             Ok(i) => Some(i),
@@ -329,7 +384,8 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         // Ordered outside to inside, until just before the end of this function.
         let mut frames = vec![frame];
 
-        let inline_ranges = self.get_procedure_inline_ranges(module_info, proc, inlinees)?;
+        let inline_ranges =
+            self.get_procedure_inline_ranges(start_rva, module_info, proc, inlinees)?;
         let mut inline_ranges = &inline_ranges[..];
 
         loop {
@@ -377,27 +433,27 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         // Now order from inside to outside.
         frames.reverse();
 
-        Ok(Some(ProcedureFrames {
-            start_rva: proc.start_rva,
-            end_rva: proc.end_rva,
+        Ok(Some(FunctionFrames {
+            start_rva: func.start_rva,
+            end_rva: func.end_rva,
             frames,
         }))
     }
 
-    fn lookup_proc(&self, probe: u32) -> Option<&BasicProcedureInfo> {
-        let last_procedure_starting_lte_address = match self
-            .procedures
-            .binary_search_by_key(&probe, |p| p.start_rva)
-        {
-            Err(0) => return None,
-            Ok(i) => i,
-            Err(i) => i - 1,
-        };
-        assert!(self.procedures[last_procedure_starting_lte_address].start_rva <= probe);
-        if probe >= self.procedures[last_procedure_starting_lte_address].end_rva {
-            return None;
+    fn lookup_function(&self, probe: u32) -> Option<&BasicFunctionInfo<'a>> {
+        let last_function_starting_lte_address =
+            match self.functions.binary_search_by_key(&probe, |p| p.start_rva) {
+                Err(0) => return None,
+                Ok(i) => i,
+                Err(i) => i - 1,
+            };
+        assert!(self.functions[last_function_starting_lte_address].start_rva <= probe);
+        if let Some(end_rva) = self.functions[last_function_starting_lte_address].end_rva {
+            if probe >= end_rva {
+                return None;
+            }
         }
-        Some(&self.procedures[last_procedure_starting_lte_address])
+        Some(&self.functions[last_function_starting_lte_address])
     }
 
     fn get_extended_module_info(&self, module_index: u16) -> Result<Rc<ExtendedModuleInfo<'a>>> {
@@ -426,25 +482,41 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         })
     }
 
-    fn get_procedure_name(&self, proc: &BasicProcedureInfo) -> Rc<Option<String>> {
+    fn get_function_name(&self, func: &BasicFunctionInfo<'a>) -> Rc<Option<String>> {
+        match &func.procedure_symbol_info {
+            Some(proc) => self.get_procedure_name(func.start_rva, &func.name, proc),
+            None => Rc::new(Some(func.name.to_string().to_string())),
+        }
+    }
+
+    fn get_procedure_name(
+        &self,
+        start_rva: u32,
+        name: &RawString<'a>,
+        proc: &ProcedureSymbolInfo,
+    ) -> Rc<Option<String>> {
         let mut cache = self.procedure_cache.borrow_mut();
-        let entry = cache.get_entry_mut(proc.start_rva);
+        let entry = cache.get_entry_mut(start_rva);
         match &entry.name {
             Some(name) => name.clone(),
             None => {
-                let name = Rc::new(self.compute_procedure_name(proc));
+                let name = Rc::new(self.compute_procedure_name(name, proc));
                 entry.name = Some(name.clone());
                 name
             }
         }
     }
 
-    fn compute_procedure_name(&self, proc: &BasicProcedureInfo) -> Option<String> {
+    fn compute_procedure_name(
+        &self,
+        name: &RawString<'a>,
+        proc: &ProcedureSymbolInfo,
+    ) -> Option<String> {
         let mut formatted_function_name = String::new();
         self.type_formatter
             .write_function(
                 &mut formatted_function_name,
-                &proc.name.to_string(),
+                &name.to_string(),
                 proc.type_index,
             )
             .ok()?;
@@ -453,11 +525,12 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
 
     fn get_procedure_lines(
         &self,
-        proc: &BasicProcedureInfo,
+        start_rva: u32,
+        proc: &ProcedureSymbolInfo,
         line_program: &LineProgram,
     ) -> Result<Rc<Vec<CachedLineInfo>>> {
         let mut cache = self.procedure_cache.borrow_mut();
-        let entry = cache.get_entry_mut(proc.start_rva);
+        let entry = cache.get_entry_mut(start_rva);
         match &entry.lines {
             Some(lines) => Ok(lines.clone()),
             None => {
@@ -470,7 +543,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
 
     fn compute_procedure_lines(
         &self,
-        proc: &BasicProcedureInfo,
+        proc: &ProcedureSymbolInfo,
         line_program: &LineProgram,
     ) -> Result<Vec<CachedLineInfo>> {
         let lines_for_proc = line_program.lines_at_offset(proc.offset);
@@ -493,12 +566,13 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
 
     fn get_procedure_inline_ranges(
         &self,
+        start_rva: u32,
         module_info: &ModuleInfo,
-        proc: &BasicProcedureInfo,
+        proc: &ProcedureSymbolInfo,
         inlinees: &BTreeMap<IdIndex, Inlinee>,
     ) -> Result<Rc<Vec<InlineRange>>> {
         let mut cache = self.procedure_cache.borrow_mut();
-        let entry = cache.get_entry_mut(proc.start_rva);
+        let entry = cache.get_entry_mut(start_rva);
         match &entry.inline_ranges {
             Some(inline_ranges) => Ok(inline_ranges.clone()),
             None => {
@@ -513,7 +587,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     fn compute_procedure_inline_ranges(
         &self,
         module_info: &ModuleInfo,
-        proc: &BasicProcedureInfo,
+        proc: &ProcedureSymbolInfo,
         inlinees: &BTreeMap<IdIndex, Inlinee>,
     ) -> Result<Vec<InlineRange>> {
         let mut lines = Vec::new();
@@ -662,25 +736,25 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     }
 }
 
-/// An iterator over all procedures in a [`Context`].
+/// An iterator over all functions in a [`Context`].
 #[derive(Clone)]
-pub struct ProcedureIter<'c, 'a, 's, 't> {
+pub struct FunctionIter<'c, 'a, 's, 't> {
     context: &'c Context<'a, 's, 't>,
     cur_index: usize,
 }
 
-impl<'c, 'a, 's, 't> Iterator for ProcedureIter<'c, 'a, 's, 't> {
-    type Item = Procedure;
+impl<'c, 'a, 's, 't> Iterator for FunctionIter<'c, 'a, 's, 't> {
+    type Item = Function;
 
-    fn next(&mut self) -> Option<Procedure> {
-        if self.cur_index >= self.context.procedures.len() {
+    fn next(&mut self) -> Option<Function> {
+        if self.cur_index >= self.context.functions.len() {
             return None;
         }
-        let proc = &self.context.procedures[self.cur_index];
+        let proc = &self.context.functions[self.cur_index];
         self.cur_index += 1;
 
-        let function = (*self.context.get_procedure_name(proc)).clone();
-        Some(Procedure {
+        let function = (*self.context.get_function_name(proc)).clone();
+        Some(Function {
             start_rva: proc.start_rva,
             end_rva: proc.end_rva,
             function,
@@ -703,15 +777,32 @@ impl ProcedureCache {
     }
 }
 
+/// Basic data about a function, based on either a public function symbol or a
+/// procedure symbol.
 #[derive(Clone)]
-struct BasicProcedureInfo<'a> {
+struct BasicFunctionInfo<'a> {
+    /// The address at which this function starts, i.e. the rva of the symbol.
     start_rva: u32,
-    end_rva: u32,
+    /// The address at which this function ends, if known. If this function is based on a
+    /// procedure symbol, then the end address is known; if it's based on a public function
+    /// symbol, then the end address is not known. During symbol lookup, we assume that
+    /// functions with no end address cover the range up to the next function.
+    end_rva: Option<u32>,
+    /// The symbol name. For public symbols, this is the mangled ("decorated") function
+    /// signature. For procedure symbols, this is just the function name, potentially including
+    /// class scope and namespace.
+    name: RawString<'a>,
+    /// If this function is based on a procedure symbol, this contains the information about
+    /// that symbol.
+    procedure_symbol_info: Option<ProcedureSymbolInfo>,
+}
+
+#[derive(Clone)]
+struct ProcedureSymbolInfo {
     module_index: u16,
     symbol_index: SymbolIndex,
     end_symbol_index: SymbolIndex,
     offset: PdbInternalSectionOffset,
-    name: RawString<'a>,
     type_index: TypeIndex,
 }
 
