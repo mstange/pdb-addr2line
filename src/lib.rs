@@ -229,7 +229,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                 ..
             })) = symbol.parse()
             {
-                let start_rva = match offset.to_rva(&address_map) {
+                let start_rva = match offset.to_rva(address_map) {
                     Some(rva) => rva.0,
                     None => continue,
                 };
@@ -250,7 +250,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                     if proc.len == 0 {
                         continue;
                     }
-                    let start_rva = match proc.offset.to_rva(&address_map) {
+                    let start_rva = match proc.offset.to_rva(address_map) {
                         Some(rva) => rva.0,
                         None => continue,
                     };
@@ -371,7 +371,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
             Some(index) => {
                 let line_info = &lines[index];
                 (
-                    self.resolve_filename(&line_program, line_info.file_index),
+                    self.resolve_filename(line_program, line_info.file_index),
                     Some(line_info.line_start),
                 )
             }
@@ -415,10 +415,9 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                 Ok(index) => (&inline_ranges[index], &inline_ranges[index + 1..]),
                 Err(_) => break,
             };
-            let function = match self.get_inline_name(inline_range.inlinee) {
-                Some(name) => Some(name.deref().clone()),
-                None => None,
-            };
+            let function = self
+                .get_inline_name(inline_range.inlinee)
+                .map(|name| name.deref().clone());
             let file = inline_range
                 .file_index
                 .and_then(|file_index| self.resolve_filename(line_program, file_index));
@@ -550,7 +549,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     ) -> Result<Vec<CachedLineInfo>> {
         let lines_for_proc = line_program.lines_at_offset(proc.offset);
         let mut iterator = lines_for_proc.map(|line_info| {
-            let rva = line_info.offset.to_rva(&self.address_map).unwrap().0;
+            let rva = line_info.offset.to_rva(self.address_map).unwrap().0;
             Ok((rva, line_info))
         });
         let mut lines = Vec::new();
@@ -655,7 +654,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                     }
                     Some(l) => l,
                 };
-                let start_rva = line_info.offset.to_rva(&self.address_map).unwrap().0;
+                let start_rva = line_info.offset.to_rva(self.address_map).unwrap().0;
                 let end_rva = start_rva + length;
                 lines.push(InlineRange {
                     start_rva,

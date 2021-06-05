@@ -37,7 +37,7 @@ impl<'a> Iterator for Addrs<'a> {
 
 fn print_loc(file: &Option<Cow<str>>, line: Option<u32>, basenames: bool, llvm: bool) {
     if let Some(file) = file {
-        let file: &str = &file;
+        let file: &str = file;
         let path = if basenames {
             Path::new(Path::new(file).file_name().unwrap())
         } else {
