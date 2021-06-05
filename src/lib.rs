@@ -163,7 +163,7 @@ pub struct Function {
     /// The function name. `None` if there was an error during stringification.
     /// If this function is based on a public symbol, the consumer may need to demangle
     /// ("undecorate") the name. This can be detected based on a leading '?' byte.
-    pub function: Option<String>,
+    pub name: Option<String>,
 }
 
 /// The result of an address lookup from [`Context::find_frames`].
@@ -307,19 +307,19 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         }
     }
 
-    /// Find the procedure (function or method) whose code contains the provided address.
+    /// Find the function whose code contains the provided address.
     /// The return value only contains the function name and the rva range, but
     /// no file or line information.
-    pub fn find_procedure(&self, probe: u32) -> Result<Option<Function>> {
-        let proc = match self.lookup_function(probe) {
-            Some(proc) => proc,
+    pub fn find_function(&self, probe: u32) -> Result<Option<Function>> {
+        let func = match self.lookup_function(probe) {
+            Some(func) => func,
             None => return Ok(None),
         };
-        let function = (*self.get_function_name(proc)).clone();
+        let name = self.get_function_name(func).map(|n| (*n).clone());
         Ok(Some(Function {
-            start_rva: proc.start_rva,
-            end_rva: proc.end_rva,
-            function,
+            start_rva: func.start_rva,
+            end_rva: func.end_rva,
+            name,
         }))
     }
 
@@ -337,7 +337,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
 
         let start_rva = func.start_rva;
 
-        let function = (*self.get_function_name(func)).clone();
+        let function = self.get_function_name(func).map(|n| (*n).clone());
 
         let proc = match &func.procedure_symbol_info {
             Some(proc) => proc,
@@ -484,10 +484,10 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         })
     }
 
-    fn get_function_name(&self, func: &BasicFunctionInfo<'a>) -> Rc<Option<String>> {
+    fn get_function_name(&self, func: &BasicFunctionInfo<'a>) -> Option<Rc<String>> {
         match &func.procedure_symbol_info {
             Some(proc) => self.get_procedure_name(func.start_rva, &func.name, proc),
-            None => Rc::new(Some(func.name.to_string().to_string())),
+            None => Some(Rc::new(func.name.to_string().to_string())),
         }
     }
 
@@ -496,13 +496,13 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         start_rva: u32,
         name: &RawString<'a>,
         proc: &ProcedureSymbolInfo,
-    ) -> Rc<Option<String>> {
+    ) -> Option<Rc<String>> {
         let mut cache = self.procedure_cache.borrow_mut();
         let entry = cache.get_entry_mut(start_rva);
         match &entry.name {
-            Some(name) => name.clone(),
+            Some(name) => name.deref().clone(),
             None => {
-                let name = Rc::new(self.compute_procedure_name(name, proc));
+                let name = self.compute_procedure_name(name, proc).map(Rc::new);
                 entry.name = Some(name.clone());
                 name
             }
@@ -765,14 +765,14 @@ impl<'c, 'a, 's, 't> Iterator for FunctionIter<'c, 'a, 's, 't> {
         if self.cur_index >= self.context.functions.len() {
             return None;
         }
-        let proc = &self.context.functions[self.cur_index];
+        let func = &self.context.functions[self.cur_index];
         self.cur_index += 1;
 
-        let function = (*self.context.get_function_name(proc)).clone();
+        let name = self.context.get_function_name(func).map(|n| (*n).clone());
         Some(Function {
-            start_rva: proc.start_rva,
-            end_rva: proc.end_rva,
-            function,
+            start_rva: func.start_rva,
+            end_rva: func.end_rva,
+            name,
         })
     }
 }
@@ -822,7 +822,7 @@ struct ProcedureSymbolInfo {
 }
 
 struct ExtendedProcedureInfo {
-    name: Option<Rc<Option<String>>>,
+    name: Option<Option<Rc<String>>>,
     lines: Option<Rc<Vec<CachedLineInfo>>>,
     inline_ranges: Option<Rc<Vec<InlineRange>>>,
 }
