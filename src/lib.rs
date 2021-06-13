@@ -1,4 +1,4 @@
-//! Resolve addresses to f function: (), file: (), line: ()  function: (), file: (), line: ()  function: (), file: (), line: () unction names, and to file name and line number
+//! Resolve addresses to function names, and to file name and line number
 //! information, with the help of a PDB file. Inline stacks are supported.
 //!
 //! The API of this crate is intended to be similar to the API of the
