@@ -82,7 +82,7 @@ impl Default for TypeFormatterFlags {
 ///
 /// The same is true for "inlinee" functions - these are referenced by their [`pdb::IdIndex`], and their
 /// [`IdData`]'s name string again only contains the raw function name but no arguments and also
-/// no namespace or class name. [`TypeFormatter`] handles those, too, in [`TypeFormatter::write_id`].
+/// no namespace or class name. [`TypeFormatter`] handles those, too, in [`TypeFormatter::format_id`].
 pub struct TypeFormatter<'t> {
     type_map: RefCell<TypeMap<'t>>,
     type_size_cache: RefCell<TypeSizeCache<'t>>,
@@ -138,13 +138,25 @@ impl<'t> TypeFormatter<'t> {
         }
     }
 
+    /// Return a string with the function or method signature, including return type (if
+    /// requested), namespace and/or class qualifiers, and arguments.
+    /// If the TypeIndex is 0, then only the raw name is emitted. In that case, the
+    /// name may need to go through additional demangling / "undecorating", but this
+    /// is the responsibility of the caller.
+    /// This method is used for [`ProcedureSymbol`s](pdb::ProcedureSymbol).
+    pub fn format_function(&self, name: &str, function_type_index: TypeIndex) -> Result<String> {
+        let mut s = String::new();
+        self.emit_function(&mut s, name, function_type_index)?;
+        Ok(s)
+    }
+
     /// Write out the function or method signature, including return type (if requested),
     /// namespace and/or class qualifiers, and arguments.
     /// If the TypeIndex is 0, then only the raw name is emitted. In that case, the
     /// name may need to go through additional demangling / "undecorating", but this
     /// is the responsibility of the caller.
     /// This method is used for [`ProcedureSymbol`s](pdb::ProcedureSymbol).
-    pub fn write_function(
+    pub fn emit_function(
         &self,
         w: &mut impl Write,
         name: &str,
@@ -177,10 +189,19 @@ impl<'t> TypeFormatter<'t> {
         Ok(())
     }
 
+    /// Return a string with the function or method signature, including return type (if
+    /// requested), namespace and/or class qualifiers, and arguments.
+    /// This method is used for inlined functions.
+    pub fn format_id(&self, id_index: IdIndex) -> Result<String> {
+        let mut s = String::new();
+        self.emit_id(&mut s, id_index)?;
+        Ok(s)
+    }
+
     /// Write out the function or method signature, including return type (if requested),
     /// namespace and/or class qualifiers, and arguments.
     /// This method is used for inlined functions.
-    pub fn write_id(&self, w: &mut impl Write, id_index: IdIndex) -> Result<()> {
+    pub fn emit_id(&self, w: &mut impl Write, id_index: IdIndex) -> Result<()> {
         match self.resolve_id_index(id_index)? {
             IdData::MemberFunction(m) => {
                 let t = match self.resolve_type_index(m.function_type)? {
@@ -205,7 +226,7 @@ impl<'t> TypeFormatter<'t> {
 
                 self.maybe_emit_return_type(w, t.return_type, t.attributes)?;
                 if let Some(scope) = f.scope {
-                    self.write_id(w, scope)?;
+                    self.emit_id(w, scope)?;
                     write!(w, "::")?;
                 }
                 self.emit_name_str(w, &f.name.to_string())?;
