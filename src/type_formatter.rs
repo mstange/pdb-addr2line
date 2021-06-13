@@ -3,13 +3,15 @@ use pdb::{
     ArgumentList, ArrayType, ClassKind, ClassType, DebugInformation, FallibleIterator,
     FunctionAttributes, IdData, IdIndex, IdInformation, Item, ItemFinder, ItemIndex, ItemIter,
     MachineType, MemberFunctionType, ModifierType, PointerMode, PointerType, PrimitiveKind,
-    PrimitiveType, ProcedureType, RawString, TypeData, TypeFinder, TypeIndex, TypeInformation,
-    TypeIter, UnionType, Variant,
+    PrimitiveType, ProcedureType, RawString, TypeData, TypeIndex, TypeInformation, UnionType,
+    Variant,
 };
+use range_collections::RangeSet;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::ops::Bound;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -82,7 +84,8 @@ impl Default for TypeFormatterFlags {
 /// [`IdData`]'s name string again only contains the raw function name but no arguments and also
 /// no namespace or class name. [`TypeFormatter`] handles those, too, in [`TypeFormatter::write_id`].
 pub struct TypeFormatter<'t> {
-    type_map: RefCell<TypeMapWithSize<'t>>,
+    type_map: RefCell<TypeMap<'t>>,
+    type_size_cache: RefCell<TypeSizeCache<'t>>,
     id_map: RefCell<IdMap<'t>>,
 
     ptr_size: u32,
@@ -97,10 +100,13 @@ impl<'t> TypeFormatter<'t> {
         id_info: &'t IdInformation<'_>,
         flags: TypeFormatterFlags,
     ) -> std::result::Result<Self, pdb::Error> {
-        let type_map = TypeMapWithSize {
+        let type_map = TypeMap {
             iter: type_info.iter(),
             finder: type_info.finder(),
+        };
+        let type_size_cache = TypeSizeCache {
             forward_ref_sizes: HashMap::new(),
+            cached_ranges: RangeSet::empty(),
         };
 
         let id_map = IdMap {
@@ -116,6 +122,7 @@ impl<'t> TypeFormatter<'t> {
 
         Ok(Self {
             type_map: RefCell::new(type_map),
+            type_size_cache: RefCell::new(type_size_cache),
             id_map: RefCell::new(id_map),
             ptr_size,
             flags,
@@ -125,7 +132,7 @@ impl<'t> TypeFormatter<'t> {
     /// Get the size, in bytes, of the type at `index`.
     pub fn get_type_size(&self, index: TypeIndex) -> u32 {
         if let Ok(type_data) = self.resolve_type_index(index) {
-            self.get_data_size(&type_data)
+            self.get_data_size(index, &type_data)
         } else {
             0
         }
@@ -222,34 +229,36 @@ impl<'t> TypeFormatter<'t> {
         Ok(item.parse()?)
     }
 
-    fn get_class_size(&self, class_type: &ClassType<'t>) -> u32 {
+    fn get_class_size(&self, index: TypeIndex, class_type: &ClassType<'t>) -> u32 {
         if class_type.properties.forward_reference() {
             let name = class_type.unique_name.unwrap_or(class_type.name);
 
+            let mut type_map = self.type_map.borrow_mut();
+            let mut type_size_cache = self.type_size_cache.borrow_mut();
+            let size = type_size_cache.get_size_for_forward_reference(index, name, &mut *type_map);
+
             // Sometimes the name will not be in self.forward_ref_sizes - this can occur for
             // the empty struct, which can be a forward reference to itself!
-            self.type_map
-                .borrow_mut()
-                .get_size_for_name(name)
-                .unwrap_or(class_type.size as u32)
+            size.unwrap_or(class_type.size as u32)
         } else {
             class_type.size.into()
         }
     }
 
-    fn get_union_size(&self, union_type: &UnionType<'t>) -> u32 {
+    fn get_union_size(&self, index: TypeIndex, union_type: &UnionType<'t>) -> u32 {
         if union_type.properties.forward_reference() {
             let name = union_type.unique_name.unwrap_or(union_type.name);
-            self.type_map
-                .borrow_mut()
-                .get_size_for_name(name)
-                .unwrap_or(union_type.size)
+            let mut type_map = self.type_map.borrow_mut();
+            let mut type_size_cache = self.type_size_cache.borrow_mut();
+            let size = type_size_cache.get_size_for_forward_reference(index, name, &mut *type_map);
+
+            size.unwrap_or(union_type.size)
         } else {
             union_type.size
         }
     }
 
-    fn get_data_size(&self, type_data: &TypeData<'t>) -> u32 {
+    fn get_data_size(&self, type_index: TypeIndex, type_data: &TypeData<'t>) -> u32 {
         match type_data {
             TypeData::Primitive(t) => {
                 if t.indirection.is_some() {
@@ -300,12 +309,12 @@ impl<'t> TypeFormatter<'t> {
                     _ => panic!("Unknown PrimitiveKind {:?} in get_data_size", t.kind),
                 }
             }
-            TypeData::Class(t) => self.get_class_size(t),
+            TypeData::Class(t) => self.get_class_size(type_index, t),
             TypeData::MemberFunction(_) => self.ptr_size,
             TypeData::Procedure(_) => self.ptr_size,
             TypeData::Pointer(t) => t.attributes.size().into(),
             TypeData::Array(t) => *t.dimensions.last().unwrap(),
-            TypeData::Union(t) => self.get_union_size(t),
+            TypeData::Union(t) => self.get_union_size(type_index, t),
             TypeData::Enumeration(t) => self.get_type_size(t.underlying_type),
             TypeData::Enumerate(t) => match t.value {
                 Variant::I8(_) | Variant::U8(_) => 1,
@@ -618,7 +627,7 @@ impl<'t> TypeFormatter<'t> {
 
     /// The returned Vec has the array dimensions in bytes, with the "lower" dimensions
     /// aggregated into the "higher" dimensions.
-    fn get_array_info(&self, array: ArrayType) -> Result<(Vec<u32>, TypeData<'t>)> {
+    fn get_array_info(&self, array: ArrayType) -> Result<(Vec<u32>, TypeIndex, TypeData<'t>)> {
         // For an array int[12][34] it'll be represented as "int[34] *".
         // For any reason the 12 is lost...
         // The internal representation is: Pointer{ base: Array{ base: int, dim: 34 * sizeof(int)} }
@@ -641,22 +650,23 @@ impl<'t> TypeFormatter<'t> {
         // XXXmstange the docs above imply that dimensions can have more than just one entry.
         // But this code only processes dimensions[0]. Is that a bug?
         loop {
-            let type_data = self.resolve_type_index(base.element_type)?;
+            let type_index = base.element_type;
+            let type_data = self.resolve_type_index(type_index)?;
             match type_data {
                 TypeData::Array(a) => {
                     dims.push(a.dimensions[0]);
                     base = a;
                 }
                 _ => {
-                    return Ok((dims, type_data));
+                    return Ok((dims, type_index, type_data));
                 }
             }
         }
     }
 
     fn emit_array(&self, w: &mut impl Write, array: ArrayType) -> Result<()> {
-        let (dimensions_as_bytes, base) = self.get_array_info(array)?;
-        let base_size = self.get_data_size(&base);
+        let (dimensions_as_bytes, base_index, base) = self.get_array_info(array)?;
+        let base_size = self.get_data_size(base_index, &base);
         self.emit_type(w, base)?;
 
         let mut iter = dimensions_as_bytes.into_iter().peekable();
@@ -887,11 +897,9 @@ where
 }
 
 type IdMap<'t> = ItemMap<'t, IdIndex>;
+type TypeMap<'t> = ItemMap<'t, TypeIndex>;
 
-struct TypeMapWithSize<'t> {
-    iter: TypeIter<'t>,
-    finder: TypeFinder<'t>,
-
+struct TypeSizeCache<'t> {
     /// A hashmap that maps a type's (unique) name to its type size.
     ///
     /// When computing type sizes, special care must be taken for types which are
@@ -906,44 +914,52 @@ struct TypeMapWithSize<'t> {
     /// Type sizes are needed when computing array lengths based on byte lengths, when
     /// printing array types. They are also needed for the public get_type_size method.
     forward_ref_sizes: HashMap<RawString<'t>, u32>,
+
+    cached_ranges: RangeSet<u32>,
 }
 
-impl<'t> TypeMapWithSize<'t> {
-    pub fn try_get(
+impl<'t> TypeSizeCache<'t> {
+    pub fn get_size_for_forward_reference(
         &mut self,
         index: TypeIndex,
-    ) -> std::result::Result<Item<'t, TypeIndex>, pdb::Error> {
-        if index <= self.finder.max_index() {
-            return self.finder.find(index);
-        }
-
-        while let Some(item) = self.iter.next()? {
-            self.finder.update(&self.iter);
-            self.update_forward_ref_size_map(&item);
-            match item.index().partial_cmp(&index) {
-                Some(Ordering::Equal) => return Ok(item),
-                Some(Ordering::Greater) => break,
-                _ => continue,
-            }
-        }
-
-        Err(pdb::Error::TypeNotFound(index.into()))
-    }
-
-    pub fn get_size_for_name(&mut self, name: RawString<'t>) -> Option<u32> {
+        name: RawString<'t>,
+        type_map: &mut TypeMap<'t>,
+    ) -> Option<u32> {
         if let Some(size) = self.forward_ref_sizes.get(&name) {
             return Some(*size);
         }
 
-        while let Some(item) = self.iter.next().ok()? {
-            self.finder.update(&self.iter);
-            let s = self.update_forward_ref_size_map(&item);
-            if let Some((found_name, found_size)) = s {
-                if found_name == name {
-                    return Some(found_size);
+        let start_index = index.0;
+        let candidate_range = RangeSet::from((start_index + 1)..);
+        let uncached_ranges = &candidate_range - &self.cached_ranges;
+        for uncached_range in uncached_ranges.iter() {
+            let (range_start, range_end) = match uncached_range {
+                (Bound::Included(range_start), Bound::Excluded(range_end)) => {
+                    (*range_start, Some(*range_end))
+                }
+                (Bound::Included(range_start), Bound::Unbounded) => (*range_start, None),
+                _ => panic!("Unexpected range {:?}", uncached_range),
+            };
+            for index in range_start.. {
+                if let Some(range_end) = range_end {
+                    if index >= range_end {
+                        break;
+                    }
+                }
+                if let Ok(item) = type_map.try_get(TypeIndex(index)) {
+                    let s = self.update_forward_ref_size_map(&item);
+                    if let Some((found_name, found_size)) = s {
+                        if found_name == name {
+                            self.cached_ranges |= RangeSet::from(start_index..(index + 1));
+                            return Some(found_size);
+                        }
+                    }
+                } else {
+                    break;
                 }
             }
         }
+        self.cached_ranges |= RangeSet::from(start_index..);
 
         None
     }
