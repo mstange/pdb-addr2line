@@ -513,15 +513,9 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         name: &RawString<'a>,
         proc: &ProcedureSymbolInfo,
     ) -> Option<String> {
-        let mut formatted_function_name = String::new();
         self.type_formatter
-            .write_function(
-                &mut formatted_function_name,
-                &name.to_string(),
-                proc.type_index,
-            )
-            .ok()?;
-        Some(formatted_function_name)
+            .format_function(&name.to_string(), proc.type_index)
+            .ok()
     }
 
     fn get_procedure_lines(
@@ -724,13 +718,9 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         let mut cache = self.inline_name_cache.borrow_mut();
         cache
             .entry(id_index)
-            .or_insert_with(|| {
-                let mut name = String::new();
-                let res = self.type_formatter.write_id(&mut name, id_index);
-                match res {
-                    Ok(()) => Some(Rc::new(name)),
-                    Err(_) => None,
-                }
+            .or_insert_with(|| match self.type_formatter.format_id(id_index) {
+                Ok(name) => Some(Rc::new(name)),
+                Err(_) => None,
             })
             .deref()
             .clone()
