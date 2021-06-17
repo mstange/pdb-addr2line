@@ -205,10 +205,37 @@ impl<'t> TypeFormatter<'t> {
                 self.emit_type_index(w, t.argument_list)?;
                 write!(w, ")")?;
             }
-            IdData::String(s) => write!(w, "{}", s.name)?,
+            IdData::String(s) => {
+                let name = s.name.to_string();
+
+                if Self::is_anonymous_namespace(&name) {
+                    write!(w, "`anonymous namespace'")?;
+                } else {
+                    write!(w, "{}", name)?;
+                }
+            }
+            IdData::StringList(s) => {
+                write!(w, "\"")?;
+                for (i, type_index) in s.substrings.iter().enumerate() {
+                    if i > 0 {
+                        write!(w, "\" \"")?;
+                    }
+                    self.emit_type_index(w, *type_index)?;
+                }
+                write!(w, "\"")?;
+            }
             other => write!(w, "<unhandled id scope {:?}>::", other)?,
         }
         Ok(())
+    }
+
+    /// Checks whether the given name declares an anonymous namespace.
+    ///
+    /// ID records specify the mangled format for anonymous namespaces: `?A0x<id>`, where `id` is a hex
+    /// identifier of the namespace. Demanglers usually resolve this as "anonymous namespace".
+    fn is_anonymous_namespace(name: &str) -> bool {
+        name.strip_prefix("?A0x")
+            .map_or(false, |rest| u32::from_str_radix(rest, 16).is_ok())
     }
 
     fn resolve_type_index(&self, index: TypeIndex) -> Result<TypeData<'t>> {
