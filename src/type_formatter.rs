@@ -173,7 +173,15 @@ impl<'t> TypeFormatter<'t> {
     /// namespace and/or class qualifiers, and arguments.
     /// This method is used for inlined functions.
     pub fn emit_id(&self, w: &mut impl Write, id_index: IdIndex) -> Result<()> {
-        match self.resolve_id_index(id_index)? {
+        let id_data = match self.resolve_id_index(id_index) {
+            Ok(id_data) => id_data,
+            Err(Error::PdbError(pdb::Error::UnimplementedTypeKind(t))) => {
+                write!(w, "<unimplemented type kind 0x{:x}>", t)?;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        match id_data {
             IdData::MemberFunction(m) => {
                 let t = match self.resolve_type_index(m.function_type)? {
                     TypeData::MemberFunction(t) => t,
@@ -840,7 +848,16 @@ impl<'t> TypeFormatter<'t> {
     }
 
     fn emit_type_index(&self, w: &mut impl Write, index: TypeIndex) -> Result<()> {
-        self.emit_type(w, self.resolve_type_index(index)?)
+        let type_data = match self.resolve_type_index(index) {
+            Ok(type_data) => type_data,
+            Err(Error::PdbError(pdb::Error::UnimplementedTypeKind(t))) => {
+                write!(w, "<unimplemented type kind 0x{:x}>", t)?;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        self.emit_type(w, type_data)
     }
 
     fn emit_type(&self, w: &mut impl Write, type_data: TypeData) -> Result<()> {
