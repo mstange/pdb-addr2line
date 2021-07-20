@@ -1,4 +1,4 @@
-[![crates.io page](http://meritbadge.herokuapp.com/pdb-addr2line)](https://crates.io/crates/pdb-addr2line)
+[![crates.io page](https://img.shields.io/crates/v/pdb-addr2line.svg)](https://crates.io/crates/pdb-addr2line)
 [![docs.rs page](https://docs.rs/pdb-addr2line/badge.svg)](https://docs.rs/pdb-addr2line/)
 
 # pdb-addr2line
