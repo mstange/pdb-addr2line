@@ -62,9 +62,9 @@ Here are some example uses:
 ```
 $ curl -o dcomp.pdb -L "https://msdl.microsoft.com/download/symbols/dcomp.pdb/648B8DD0780A4E22FA7FA89B84633C231/dcomp.pdb"
 $ pdb-addr2line --exe dcomp.pdb -fC 0x59aa0 0x52340 0x13498
-Windows::UI::Composition::Compositor::Api::CreateScalarKeyFrameAnimation
+Windows::UI::Composition::Compositor::Api::CreateScalarKeyFrameAnimation(Windows::UI::Composition::IScalarKeyFrameAnimation**)
 ??:?
-std::map<unsigned int,Windows::UI::Composition::AnimationLoggingManager::ReferencedObject,std::less<unsigned int>,std::allocator<std::pair<unsigned int const ,Windows::UI::Composition::AnimationLoggingManager::ReferencedObject> > >::_Try_emplace<unsigned int const &>
+std::map<unsigned int, Windows::UI::Composition::AnimationLoggingManager::ReferencedObject, std::less<unsigned int>, std::allocator<std::pair<unsigned int const, Windows::UI::Composition::AnimationLoggingManager::ReferencedObject> > >::_Try_emplace<unsigned int const&>(unsigned int const&)
 ??:?
 DirectComposition::CDxDevice::RemoveGuardRect(ID3D11Texture2D*)
 ??:?
