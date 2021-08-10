@@ -219,6 +219,10 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     ) -> Result<Self> {
         let mut functions = Vec::new();
 
+        // Store the names of mangled public symbols, so that we can use them for
+        // function symbols.
+        let mut decorated_symbol_names = BTreeMap::new();
+
         // Start with the public function symbols.
         let mut symbol_iter = global_symbols.iter();
         while let Some(symbol) = symbol_iter.next()? {
@@ -233,6 +237,9 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                     Some(rva) => rva.0,
                     None => continue,
                 };
+                if name.to_string().starts_with('?') {
+                    decorated_symbol_names.insert(start_rva, name);
+                }
                 functions.push(BasicFunctionInfo {
                     start_rva,
                     end_rva: None,
@@ -255,10 +262,25 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                         None => continue,
                     };
 
+                    let name = if proc.type_index != TypeIndex(0) {
+                        // The arguments are stored in the type. Use the argument-less name,
+                        // we will stringify the arguments from the type when needed.
+                        proc.name
+                    } else {
+                        // We have no type, so proc.name might be an argument-less string.
+                        // If we have a public symbol at this address which is a decorated name
+                        // (starts with a '?'), prefer to use that because it'll usually include
+                        // the arguments.
+                        match decorated_symbol_names.get(&start_rva) {
+                            Some(name) => *name,
+                            None => proc.name,
+                        }
+                    };
+
                     functions.push(BasicFunctionInfo {
                         start_rva,
                         end_rva: Some(start_rva + proc.len),
-                        name: proc.name,
+                        name,
                         procedure_symbol_info: Some(ProcedureSymbolInfo {
                             module_index: module_index as u16,
                             symbol_index: symbol.index(),
@@ -783,7 +805,7 @@ impl ProcedureCache {
 
 /// Basic data about a function, based on either a public function symbol or a
 /// procedure symbol.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct BasicFunctionInfo<'a> {
     /// The address at which this function starts, i.e. the rva of the symbol.
     start_rva: u32,
@@ -801,7 +823,7 @@ struct BasicFunctionInfo<'a> {
     procedure_symbol_info: Option<ProcedureSymbolInfo>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ProcedureSymbolInfo {
     module_index: u16,
     symbol_index: SymbolIndex,
