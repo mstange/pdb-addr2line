@@ -237,7 +237,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                     Some(rva) => rva.0,
                     None => continue,
                 };
-                if name.to_string().starts_with('?') {
+                if name.as_bytes().starts_with(&[b'?']) {
                     decorated_symbol_names.insert(start_rva, name);
                 }
                 functions.push(BasicFunctionInfo {
