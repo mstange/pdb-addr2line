@@ -335,7 +335,11 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
     /// The return value only contains the function name and the rva range, but
     /// no file or line information.
     pub fn find_function(&self, probe: u32) -> Result<Option<Function>> {
-        let func = match self.lookup_function(probe) {
+        let offset = match Rva(probe).to_internal_offset(self.address_map) {
+            Some(offset) => offset,
+            None => return Ok(None),
+        };
+        let func = match self.lookup_function(offset) {
             Some(func) => func,
             None => return Ok(None),
         };
@@ -376,7 +380,11 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
     ///
     /// A lot of information is cached so that repeated calls are fast.
     pub fn find_frames(&self, probe: u32) -> Result<Option<FunctionFrames>> {
-        let func = match self.lookup_function(probe) {
+        let offset = match Rva(probe).to_internal_offset(self.address_map) {
+            Some(offset) => offset,
+            None => return Ok(None),
+        };
+        let func = match self.lookup_function(offset) {
             Some(func) => func,
             None => return Ok(None),
         };
@@ -420,7 +428,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         let inlinees = &module.inlinees;
 
         let lines = &self.get_procedure_lines(proc, line_program)?[..];
-        let search = match lines.binary_search_by_key(&probe, |li| li.start_offset) {
+        let search = match lines.binary_search_by_key(&offset.offset, |li| li.start_offset) {
             Err(0) => None,
             Ok(i) => Some(i),
             Err(i) => Some(i - 1),
@@ -451,7 +459,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         loop {
             let current_depth = (frames.len() - 1) as u16;
 
-            // Look up (probe, current_depth) in inline_ranges.
+            // Look up (offset.offset, current_depth) in inline_ranges.
             // `inlined_addresses` is sorted in "breadth-first traversal order", i.e.
             // by `call_depth` first, and then by `start_offset`. See the comment at
             // the sort call for more information about why.
@@ -460,9 +468,9 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
                     Ordering::Greater
                 } else if range.call_depth < current_depth {
                     Ordering::Less
-                } else if range.start_offset > probe {
+                } else if range.start_offset > offset.offset {
                     Ordering::Greater
-                } else if range.end_offset <= probe {
+                } else if range.end_offset <= offset.offset {
                     Ordering::Less
                 } else {
                     Ordering::Equal
@@ -613,9 +621,10 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         Ok(functions)
     }
 
-    fn lookup_function(&self, probe: u32) -> Option<PublicOrProcedureSymbol<'_, 'a>> {
-        let offset = Rva(probe).to_internal_offset(self.address_map)?;
-
+    fn lookup_function(
+        &self,
+        offset: PdbInternalSectionOffset,
+    ) -> Option<PublicOrProcedureSymbol<'_, 'a>> {
         let sc_index = match self.section_contributions.binary_search_by(|sc| {
             if sc.section_index < offset.section {
                 Ordering::Less
@@ -757,17 +766,13 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         proc: &ProcedureSymbolFunction,
         line_program: &LineProgram,
     ) -> Result<Vec<CachedLineInfo>> {
-        let lines_for_proc = line_program.lines_at_offset(proc.offset);
-        let mut iterator = lines_for_proc.map(|line_info| {
-            let rva = line_info.offset.to_rva(self.address_map).unwrap().0;
-            Ok((rva, line_info))
-        });
+        let mut iterator = line_program.lines_at_offset(proc.offset);
         let mut lines = Vec::new();
         let mut next_item = iterator.next()?;
-        while let Some((start_offset, line_info)) = next_item {
+        while let Some(line_info) = next_item {
             next_item = iterator.next()?;
             lines.push(CachedLineInfo {
-                start_offset,
+                start_offset: line_info.offset.offset,
                 file_index: line_info.file_index,
                 line_start: line_info.line_start,
             });
@@ -863,8 +868,8 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
                     }
                     Some(l) => l,
                 };
-                let start_offset = line_info.offset.to_rva(self.address_map).unwrap().0;
-                let end_offset = start_offset + length;
+                let start_offset = line_info.offset.offset;
+                let end_offset = line_info.offset.offset + length;
                 lines.push(InlineRange {
                     start_offset,
                     end_offset,
