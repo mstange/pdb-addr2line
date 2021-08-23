@@ -20,6 +20,12 @@ pub enum Error {
 
     #[error("Overlapping section contributions in section {0} from modules {1} and {2}")]
     OverlappingSectionContributions(u16, u16, u16),
+
+    #[error("Getting the procedure lines was unsuccessful.")]
+    ProcedureLinesUnsuccessful,
+
+    #[error("Getting the procedure inline ranges was unsuccessful.")]
+    ProcedureInlineRangesUnsuccessful,
 }
 
 impl From<pdb::Error> for Error {
