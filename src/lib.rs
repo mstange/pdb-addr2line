@@ -358,7 +358,11 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
                 }))
             }
             PublicOrProcedureSymbol::Procedure(_, func) => {
-                let name = self.get_procedure_name(func).map(|n| (*n).clone());
+                let mut procedure_cache = self.procedure_cache.borrow_mut();
+                let extended_info = procedure_cache.get_entry_mut(func.offset);
+                let name = extended_info
+                    .get_name(func, &self.type_formatter)
+                    .map(String::from);
                 let start_rva = match func.offset.to_rva(self.address_map) {
                     Some(rva) => rva.0,
                     None => return Ok(None),
@@ -411,7 +415,11 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             PublicOrProcedureSymbol::Procedure(module_index, proc) => (module_index, proc),
         };
 
-        let function = self.get_procedure_name(proc).map(|n| (*n).clone());
+        let mut procedure_cache = self.procedure_cache.borrow_mut();
+        let proc_extended_info = procedure_cache.get_entry_mut(proc.offset);
+        let function = proc_extended_info
+            .get_name(proc, &self.type_formatter)
+            .map(String::from);
         let start_rva = match proc.offset.to_rva(self.address_map) {
             Some(rva) => rva.0,
             None => return Ok(None),
@@ -427,7 +435,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         let line_program = &module.line_program;
         let inlinees = &module.inlinees;
 
-        let lines = &self.get_procedure_lines(proc, line_program)?[..];
+        let lines = proc_extended_info.get_lines(proc, line_program)?;
         let search = match lines.binary_search_by_key(&offset.offset, |li| li.start_offset) {
             Err(0) => None,
             Ok(i) => Some(i),
@@ -453,8 +461,8 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         // Ordered outside to inside, until just before the end of this function.
         let mut frames = vec![frame];
 
-        let inline_ranges = self.get_procedure_inline_ranges(module_info, proc, inlinees)?;
-        let mut inline_ranges = &inline_ranges[..];
+        let mut inline_ranges =
+            proc_extended_info.get_inline_ranges(module_info, proc, inlinees)?;
 
         loop {
             let current_depth = (frames.len() - 1) as u16;
@@ -725,215 +733,6 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         })
     }
 
-    fn get_procedure_name(&self, proc: &ProcedureSymbolFunction) -> Option<Rc<String>> {
-        let mut cache = self.procedure_cache.borrow_mut();
-        let entry = cache.get_entry_mut(proc.offset);
-        match &entry.name {
-            Some(name) => name.deref().clone(),
-            None => {
-                let name = self.compute_procedure_name(proc).map(Rc::new);
-                entry.name = Some(name.clone());
-                name
-            }
-        }
-    }
-
-    fn compute_procedure_name(&self, proc: &ProcedureSymbolFunction) -> Option<String> {
-        self.type_formatter
-            .format_function(&proc.name.to_string(), proc.type_index)
-            .ok()
-    }
-
-    fn get_procedure_lines(
-        &self,
-        proc: &ProcedureSymbolFunction,
-        line_program: &LineProgram,
-    ) -> Result<Rc<Vec<CachedLineInfo>>> {
-        let mut cache = self.procedure_cache.borrow_mut();
-        let entry = cache.get_entry_mut(proc.offset);
-        match &entry.lines {
-            Some(lines) => Ok(lines.clone()),
-            None => {
-                let lines = Rc::new(self.compute_procedure_lines(proc, line_program)?);
-                entry.lines = Some(lines.clone());
-                Ok(lines)
-            }
-        }
-    }
-
-    fn compute_procedure_lines(
-        &self,
-        proc: &ProcedureSymbolFunction,
-        line_program: &LineProgram,
-    ) -> Result<Vec<CachedLineInfo>> {
-        let mut iterator = line_program.lines_at_offset(proc.offset);
-        let mut lines = Vec::new();
-        let mut next_item = iterator.next()?;
-        while let Some(line_info) = next_item {
-            next_item = iterator.next()?;
-            lines.push(CachedLineInfo {
-                start_offset: line_info.offset.offset,
-                file_index: line_info.file_index,
-                line_start: line_info.line_start,
-            });
-        }
-        Ok(lines)
-    }
-
-    fn get_procedure_inline_ranges(
-        &self,
-        module_info: &ModuleInfo,
-        proc: &ProcedureSymbolFunction,
-        inlinees: &BTreeMap<IdIndex, Inlinee>,
-    ) -> Result<Rc<Vec<InlineRange>>> {
-        let mut cache = self.procedure_cache.borrow_mut();
-        let entry = cache.get_entry_mut(proc.offset);
-        match &entry.inline_ranges {
-            Some(inline_ranges) => Ok(inline_ranges.clone()),
-            None => {
-                let inline_ranges =
-                    Rc::new(self.compute_procedure_inline_ranges(module_info, proc, inlinees)?);
-                entry.inline_ranges = Some(inline_ranges.clone());
-                Ok(inline_ranges)
-            }
-        }
-    }
-
-    fn compute_procedure_inline_ranges(
-        &self,
-        module_info: &ModuleInfo,
-        proc: &ProcedureSymbolFunction,
-        inlinees: &BTreeMap<IdIndex, Inlinee>,
-    ) -> Result<Vec<InlineRange>> {
-        let mut lines = Vec::new();
-        let mut symbols_iter = module_info.symbols_at(proc.symbol_index)?;
-        let _proc_sym = symbols_iter.next()?;
-        while let Some(symbol) = symbols_iter.next()? {
-            if symbol.index() >= proc.end_symbol_index {
-                break;
-            }
-            match symbol.parse() {
-                Ok(SymbolData::Procedure(p)) => {
-                    // This is a nested procedure. Skip it.
-                    symbols_iter.skip_to(p.end)?;
-                }
-                Ok(SymbolData::InlineSite(site)) => {
-                    self.process_inlinee_symbols(
-                        &mut symbols_iter,
-                        inlinees,
-                        proc.offset,
-                        site,
-                        0,
-                        &mut lines,
-                    )?;
-                }
-                _ => {}
-            }
-        }
-
-        lines.sort_unstable_by(|r1, r2| {
-            if r1.call_depth < r2.call_depth {
-                Ordering::Less
-            } else if r1.call_depth > r2.call_depth {
-                Ordering::Greater
-            } else if r1.start_offset < r2.start_offset {
-                Ordering::Less
-            } else if r1.start_offset > r2.start_offset {
-                Ordering::Greater
-            } else {
-                Ordering::Equal
-            }
-        });
-
-        Ok(lines)
-    }
-
-    fn process_inlinee_symbols(
-        &self,
-        symbols_iter: &mut SymbolIter,
-        inlinees: &BTreeMap<IdIndex, Inlinee>,
-        proc_offset: PdbInternalSectionOffset,
-        site: InlineSiteSymbol,
-        call_depth: u16,
-        lines: &mut Vec<InlineRange>,
-    ) -> Result<RangeSet<u32>> {
-        let mut ranges = RangeSet::empty();
-        let mut file_index = None;
-        if let Some(inlinee) = inlinees.get(&site.inlinee) {
-            let mut iter = inlinee.lines(proc_offset, &site);
-            while let Ok(Some(line_info)) = iter.next() {
-                let length = match line_info.length {
-                    Some(0) | None => {
-                        continue;
-                    }
-                    Some(l) => l,
-                };
-                let start_offset = line_info.offset.offset;
-                let end_offset = line_info.offset.offset + length;
-                lines.push(InlineRange {
-                    start_offset,
-                    end_offset,
-                    call_depth,
-                    inlinee: site.inlinee,
-                    file_index: Some(line_info.file_index),
-                    line_start: Some(line_info.line_start),
-                });
-                ranges |= RangeSet::from(start_offset..end_offset);
-                if file_index.is_none() {
-                    file_index = Some(line_info.file_index);
-                }
-            }
-        }
-
-        let mut callee_ranges = RangeSet::empty();
-        while let Some(symbol) = symbols_iter.next()? {
-            if symbol.index() >= site.end {
-                break;
-            }
-            match symbol.parse() {
-                Ok(SymbolData::Procedure(p)) => {
-                    // This is a nested procedure. Skip it.
-                    symbols_iter.skip_to(p.end)?;
-                }
-                Ok(SymbolData::InlineSite(site)) => {
-                    callee_ranges |= self.process_inlinee_symbols(
-                        symbols_iter,
-                        inlinees,
-                        proc_offset,
-                        site,
-                        call_depth + 1,
-                        lines,
-                    )?;
-                }
-                _ => {}
-            }
-        }
-
-        if !ranges.is_superset(&callee_ranges) {
-            // Workaround bad debug info.
-            let missing_ranges: RangeSet<u32> = &callee_ranges - &ranges;
-            for range in missing_ranges.iter() {
-                let (start_offset, end_offset) = match range {
-                    (Bound::Included(s), Bound::Excluded(e)) => (*s, *e),
-                    other => {
-                        panic!("Unexpected range bounds {:?}", other);
-                    }
-                };
-                lines.push(InlineRange {
-                    start_offset,
-                    end_offset,
-                    call_depth,
-                    inlinee: site.inlinee,
-                    file_index,
-                    line_start: None,
-                });
-            }
-            ranges |= missing_ranges;
-        }
-
-        Ok(ranges)
-    }
-
     fn get_inline_name(&self, id_index: IdIndex) -> Option<Rc<String>> {
         let mut cache = self.inline_name_cache.borrow_mut();
         cache
@@ -1132,9 +931,201 @@ enum PublicOrProcedureSymbol<'c, 'a> {
 }
 
 struct ExtendedProcedureInfo {
-    name: Option<Option<Rc<String>>>,
-    lines: Option<Rc<Vec<CachedLineInfo>>>,
-    inline_ranges: Option<Rc<Vec<InlineRange>>>,
+    name: Option<Option<String>>,
+    lines: Option<Result<Vec<CachedLineInfo>>>,
+    inline_ranges: Option<Result<Vec<InlineRange>>>,
+}
+
+impl ExtendedProcedureInfo {
+    fn get_name(
+        &mut self,
+        proc: &ProcedureSymbolFunction,
+        type_formatter: &TypeFormatter,
+    ) -> Option<&str> {
+        self.name
+            .get_or_insert_with(|| {
+                type_formatter
+                    .format_function(&proc.name.to_string(), proc.type_index)
+                    .ok()
+            })
+            .as_deref()
+    }
+
+    fn get_lines(
+        &mut self,
+        proc: &ProcedureSymbolFunction,
+        line_program: &LineProgram,
+    ) -> Result<&[CachedLineInfo]> {
+        let ref_to_result = self.lines.get_or_insert_with(|| {
+            let mut iterator = line_program.lines_at_offset(proc.offset);
+            let mut lines = Vec::new();
+            let mut next_item = iterator.next()?;
+            while let Some(line_info) = next_item {
+                next_item = iterator.next()?;
+                lines.push(CachedLineInfo {
+                    start_offset: line_info.offset.offset,
+                    file_index: line_info.file_index,
+                    line_start: line_info.line_start,
+                });
+            }
+            Ok(lines)
+        });
+        match ref_to_result {
+            Ok(v) => Ok(&v[..]),
+            Err(e) => Err(std::mem::replace(e, Error::ProcedureLinesUnsuccessful)),
+        }
+    }
+
+    fn get_inline_ranges(
+        &mut self,
+        module_info: &ModuleInfo,
+        proc: &ProcedureSymbolFunction,
+        inlinees: &BTreeMap<IdIndex, Inlinee>,
+    ) -> Result<&[InlineRange]> {
+        let ref_to_result = self
+            .inline_ranges
+            .get_or_insert_with(|| compute_procedure_inline_ranges(module_info, proc, inlinees));
+        match ref_to_result {
+            Ok(v) => Ok(&v[..]),
+            Err(e) => Err(std::mem::replace(
+                e,
+                Error::ProcedureInlineRangesUnsuccessful,
+            )),
+        }
+    }
+}
+
+fn compute_procedure_inline_ranges(
+    module_info: &ModuleInfo,
+    proc: &ProcedureSymbolFunction,
+    inlinees: &BTreeMap<IdIndex, Inlinee>,
+) -> Result<Vec<InlineRange>> {
+    let mut lines = Vec::new();
+    let mut symbols_iter = module_info.symbols_at(proc.symbol_index)?;
+    let _proc_sym = symbols_iter.next()?;
+    while let Some(symbol) = symbols_iter.next()? {
+        if symbol.index() >= proc.end_symbol_index {
+            break;
+        }
+        match symbol.parse() {
+            Ok(SymbolData::Procedure(p)) => {
+                // This is a nested procedure. Skip it.
+                symbols_iter.skip_to(p.end)?;
+            }
+            Ok(SymbolData::InlineSite(site)) => {
+                process_inlinee_symbols(
+                    &mut symbols_iter,
+                    inlinees,
+                    proc.offset,
+                    site,
+                    0,
+                    &mut lines,
+                )?;
+            }
+            _ => {}
+        }
+    }
+
+    lines.sort_unstable_by(|r1, r2| {
+        if r1.call_depth < r2.call_depth {
+            Ordering::Less
+        } else if r1.call_depth > r2.call_depth {
+            Ordering::Greater
+        } else if r1.start_offset < r2.start_offset {
+            Ordering::Less
+        } else if r1.start_offset > r2.start_offset {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    });
+
+    Ok(lines)
+}
+
+fn process_inlinee_symbols(
+    symbols_iter: &mut SymbolIter,
+    inlinees: &BTreeMap<IdIndex, Inlinee>,
+    proc_offset: PdbInternalSectionOffset,
+    site: InlineSiteSymbol,
+    call_depth: u16,
+    lines: &mut Vec<InlineRange>,
+) -> Result<RangeSet<u32>> {
+    let mut ranges = RangeSet::empty();
+    let mut file_index = None;
+    if let Some(inlinee) = inlinees.get(&site.inlinee) {
+        let mut iter = inlinee.lines(proc_offset, &site);
+        while let Ok(Some(line_info)) = iter.next() {
+            let length = match line_info.length {
+                Some(0) | None => {
+                    continue;
+                }
+                Some(l) => l,
+            };
+            let start_offset = line_info.offset.offset;
+            let end_offset = line_info.offset.offset + length;
+            lines.push(InlineRange {
+                start_offset,
+                end_offset,
+                call_depth,
+                inlinee: site.inlinee,
+                file_index: Some(line_info.file_index),
+                line_start: Some(line_info.line_start),
+            });
+            ranges |= RangeSet::from(start_offset..end_offset);
+            if file_index.is_none() {
+                file_index = Some(line_info.file_index);
+            }
+        }
+    }
+
+    let mut callee_ranges = RangeSet::empty();
+    while let Some(symbol) = symbols_iter.next()? {
+        if symbol.index() >= site.end {
+            break;
+        }
+        match symbol.parse() {
+            Ok(SymbolData::Procedure(p)) => {
+                // This is a nested procedure. Skip it.
+                symbols_iter.skip_to(p.end)?;
+            }
+            Ok(SymbolData::InlineSite(site)) => {
+                callee_ranges |= process_inlinee_symbols(
+                    symbols_iter,
+                    inlinees,
+                    proc_offset,
+                    site,
+                    call_depth + 1,
+                    lines,
+                )?;
+            }
+            _ => {}
+        }
+    }
+
+    if !ranges.is_superset(&callee_ranges) {
+        // Workaround bad debug info.
+        let missing_ranges: RangeSet<u32> = &callee_ranges - &ranges;
+        for range in missing_ranges.iter() {
+            let (start_offset, end_offset) = match range {
+                (Bound::Included(s), Bound::Excluded(e)) => (*s, *e),
+                other => {
+                    panic!("Unexpected range bounds {:?}", other);
+                }
+            };
+            lines.push(InlineRange {
+                start_offset,
+                end_offset,
+                call_depth,
+                inlinee: site.inlinee,
+                file_index,
+                line_start: None,
+            });
+        }
+        ranges |= missing_ranges;
+    }
+
+    Ok(ranges)
 }
 
 struct ExtendedModuleInfo<'a> {
