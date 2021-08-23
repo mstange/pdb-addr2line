@@ -1,6 +1,6 @@
 use std::borrow::Cow;
+use std::fmt;
 use std::fs::File;
-use std::io::Cursor;
 use std::io::{BufRead, Lines, StdinLock, Write};
 use std::path::Path;
 
@@ -164,10 +164,10 @@ fn main() {
 
     let file = File::open(path).unwrap();
     let map = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
-    let cursor = Cursor::new(map);
+    let source = Source(map);
 
-    let mut pdb = pdb::PDB::open(cursor).unwrap();
-    let context_data = pdb_addr2line::ContextPdbData::try_from_pdb(&mut pdb).unwrap();
+    let pdb = pdb::PDB::open(source).unwrap();
+    let context_data = pdb_addr2line::ContextPdbData::try_from_pdb(pdb).unwrap();
     let ctx = context_data.make_context().unwrap();
 
     let stdin = std::io::stdin();
@@ -248,5 +248,42 @@ fn main() {
             println!();
         }
         std::io::stdout().flush().unwrap();
+    }
+}
+
+#[derive(Debug)]
+struct Source(memmap2::Mmap);
+
+#[derive(Clone)]
+struct ReadView {
+    bytes: Vec<u8>,
+}
+
+impl fmt::Debug for ReadView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ReadView({} bytes)", self.bytes.len())
+    }
+}
+
+impl pdb::SourceView<'_> for ReadView {
+    fn as_slice(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+}
+
+impl<'s> pdb::Source<'s> for Source {
+    fn view(
+        &mut self,
+        slices: &[pdb::SourceSlice],
+    ) -> Result<Box<dyn pdb::SourceView<'s>>, std::io::Error> {
+        let len = slices.iter().fold(0, |acc, s| acc + s.size);
+
+        let mut bytes = Vec::with_capacity(len);
+
+        for slice in slices {
+            bytes.extend_from_slice(&self.0[slice.offset as usize..][..slice.size as usize]);
+        }
+
+        Ok(Box::new(ReadView { bytes }))
     }
 }
