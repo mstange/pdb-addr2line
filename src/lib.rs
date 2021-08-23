@@ -376,10 +376,6 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
     ///
     /// A lot of information is cached so that repeated calls are fast.
     pub fn find_frames(&self, probe: u32) -> Result<Option<FunctionFrames>> {
-        // for module_index in 0..self.modules.len() {
-        //     let _ = self.get_module_procedures(module_index as u16);
-        // }
-
         let func = match self.lookup_function(probe) {
             Some(func) => func,
             None => return Ok(None),
@@ -546,9 +542,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         let mut symbols_iter = module_info.symbols()?;
         let mut functions = Vec::new();
         while let Some(symbol) = symbols_iter.next()? {
-            let sym = symbol.parse();
-            // println!("symbol: {:?}", sym);
-            match sym {
+            match symbol.parse() {
                 Ok(SymbolData::Procedure(proc)) => {
                     if proc.len == 0 {
                         continue;
@@ -621,7 +615,6 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
 
     fn lookup_function(&self, probe: u32) -> Option<PublicOrProcedureSymbol<'_, 'a>> {
         let offset = Rva(probe).to_internal_offset(self.address_map)?;
-        // eprintln!("rva 0x{:x} mapped to {:?}", probe, offset);
 
         let sc_index = match self.section_contributions.binary_search_by(|sc| {
             if sc.section_index < offset.section {
@@ -643,7 +636,6 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             }
         };
 
-        // eprintln!("found contribution: {:?}", self.section_contributions[sc_index]);
         let module_index = self.section_contributions[sc_index].module_index;
         let module_procedures = self.get_module_procedures(module_index).ok()?;
         if let Ok(procedure_index) = module_procedures.binary_search_by(|p| {
