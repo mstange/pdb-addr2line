@@ -50,7 +50,7 @@ mod type_formatter;
 pub use error::Error;
 pub use type_formatter::*;
 
-use elsa::{FrozenMap, FrozenVec};
+use elsa::FrozenVec;
 use maybe_owned::MaybeOwned;
 use pdb::{
     AddressMap, DebugInformation, FallibleIterator, FileIndex, IdIndex, IdInformation,
@@ -218,8 +218,7 @@ pub struct Context<'a: 't, 's, 't> {
     type_formatter: MaybeOwned<'a, TypeFormatter<'t>>,
     modules: Vec<Module<'a>>,
     public_functions: Vec<PublicSymbolFunction<'a>>,
-    module_procedures: FrozenMap<u16, Box<(&'a ModuleInfo<'s>, Vec<ProcedureSymbolFunction<'a>>)>>,
-    cache: RefCell<ContextCache<'a>>,
+    cache: RefCell<ContextCache<'a, 's>>,
 }
 
 impl<'a, 's, 't> Context<'a, 's, 't> {
@@ -285,7 +284,6 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
             type_formatter,
             modules,
             public_functions,
-            module_procedures: FrozenMap::new(),
             cache: Default::default(),
         })
     }
@@ -298,9 +296,13 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     /// Iterate over all functions in the modules.
     pub fn functions(&self) -> FunctionIter<'_, 'a, 's, 't> {
         let mut cache = self.cache.borrow_mut();
-        let full_rva_list = cache
-            .full_rva_list
-            .get_or_insert_with(|| Rc::new(self.compute_full_rva_list()))
+        let ContextCache {
+            full_rva_list,
+            module_cache,
+            ..
+        } = &mut *cache;
+        let full_rva_list = full_rva_list
+            .get_or_insert_with(|| Rc::new(self.compute_full_rva_list(module_cache)))
             .clone();
         FunctionIter {
             context: self,
@@ -317,7 +319,15 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
             Some(offset) => offset,
             None => return Ok(None),
         };
-        let func = match self.lookup_function(offset) {
+
+        let mut cache = self.cache.borrow_mut();
+        let ContextCache {
+            module_cache,
+            procedure_cache,
+            ..
+        } = &mut *cache;
+
+        let func = match self.lookup_function(offset, module_cache) {
             Some(func) => func,
             None => return Ok(None),
         };
@@ -336,8 +346,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                 }))
             }
             PublicOrProcedureSymbol::Procedure(_, _, func) => {
-                let mut cache = self.cache.borrow_mut();
-                let extended_info = cache.procedure_cache.entry(func.offset).or_default();
+                let extended_info = procedure_cache.entry(func.offset).or_default();
                 let name = extended_info
                     .get_name(func, &self.type_formatter)
                     .map(String::from);
@@ -366,7 +375,17 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
             Some(offset) => offset,
             None => return Ok(None),
         };
-        let func = match self.lookup_function(offset) {
+
+        let mut cache = self.cache.borrow_mut();
+        let ContextCache {
+            module_cache,
+            procedure_cache,
+            extended_module_cache,
+            inline_name_cache,
+            ..
+        } = &mut *cache;
+
+        let func = match self.lookup_function(offset, module_cache) {
             Some(func) => func,
             None => return Ok(None),
         };
@@ -395,13 +414,6 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
             }
         };
 
-        let mut cache = self.cache.borrow_mut();
-        let ContextCache {
-            procedure_cache,
-            extended_module_cache,
-            inline_name_cache,
-            ..
-        } = &mut *cache;
         let proc_extended_info = procedure_cache.entry(proc.offset).or_default();
         let function = proc_extended_info
             .get_name(proc, &self.type_formatter)
@@ -504,7 +516,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         }))
     }
 
-    fn compute_full_rva_list(&self) -> Vec<u32> {
+    fn compute_full_rva_list(&self, module_cache: &mut BasicModuleInfoCache<'a, 's>) -> Vec<u32> {
         let mut list = Vec::new();
         for func in &self.public_functions {
             if let Some(rva) = func.start_offset.to_rva(self.address_map) {
@@ -512,7 +524,11 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
             }
         }
         for module_index in 0..(self.modules.len() as u16) {
-            if let Ok(Some((procedures, _))) = self.get_module_procedures(module_index) {
+            let basic_module_info = module_cache
+                .entry(module_index)
+                .or_insert_with(|| self.compute_basic_module_info(module_index))
+                .as_ref();
+            if let Ok(Some(BasicModuleInfo { procedures, .. })) = basic_module_info {
                 for proc in procedures {
                     if let Some(rva) = proc.offset.to_rva(self.address_map) {
                         list.push(rva.0);
@@ -525,14 +541,10 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         list
     }
 
-    fn get_module_procedures(
+    fn compute_basic_module_info(
         &self,
         module_index: u16,
-    ) -> Result<Option<(&[ProcedureSymbolFunction<'a>], &'a ModuleInfo<'s>)>> {
-        if let Some((module_info, procedures)) = self.module_procedures.get(&module_index) {
-            return Ok(Some((procedures, module_info)));
-        }
-
+    ) -> Result<Option<BasicModuleInfo<'a, 's>>> {
         let module = &self.modules[module_index as usize];
         let module_info = match self.module_provider.get_module_info(module)? {
             Some(m) => m,
@@ -540,16 +552,6 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                 return Ok(None);
             }
         };
-        let procedures = self.compute_module_procedures(module_info)?;
-        let obj = Box::new((module_info, procedures));
-        let (module_info, procedures) = self.module_procedures.insert(module_index, obj);
-        Ok(Some((procedures, module_info)))
-    }
-
-    fn compute_module_procedures(
-        &self,
-        module_info: &'a ModuleInfo<'s>,
-    ) -> Result<Vec<ProcedureSymbolFunction<'a>>> {
         let mut symbols_iter = module_info.symbols()?;
         let mut functions = Vec::new();
         while let Some(symbol) = symbols_iter.next()? {
@@ -621,13 +623,17 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         functions.sort_unstable_by_key(|p| (p.offset.section, p.offset.offset));
         functions.dedup_by_key(|p| p.offset);
 
-        Ok(functions)
+        Ok(Some(BasicModuleInfo {
+            module_info,
+            procedures: functions,
+        }))
     }
 
-    fn lookup_function(
+    fn lookup_function<'m>(
         &self,
         offset: PdbInternalSectionOffset,
-    ) -> Option<PublicOrProcedureSymbol<'_, 'a, 's>> {
+        module_cache: &'m mut HashMap<u16, Result<Option<BasicModuleInfo<'a, 's>>>>,
+    ) -> Option<PublicOrProcedureSymbol<'_, 'a, 's, 'm>> {
         let sc_index = match self.section_contributions.binary_search_by(|sc| {
             if sc.section_index < offset.section {
                 Ordering::Less
@@ -649,10 +655,18 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         };
 
         let module_index = self.section_contributions[sc_index].module_index;
-        if let Some((module_procedures, module_info)) =
-            self.get_module_procedures(module_index).ok()?
+        let basic_module_info = module_cache
+            .entry(module_index)
+            .or_insert_with(|| self.compute_basic_module_info(module_index))
+            .as_ref()
+            .ok()?;
+
+        if let Some(BasicModuleInfo {
+            procedures,
+            module_info,
+        }) = basic_module_info
         {
-            if let Ok(procedure_index) = module_procedures.binary_search_by(|p| {
+            if let Ok(procedure_index) = procedures.binary_search_by(|p| {
                 if p.offset.section < offset.section {
                     Ordering::Less
                 } else if p.offset.section > offset.section {
@@ -669,7 +683,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                 return Some(PublicOrProcedureSymbol::Procedure(
                     module_index,
                     module_info,
-                    &module_procedures[procedure_index],
+                    &procedures[procedure_index],
                 ));
             }
         }
@@ -758,11 +772,19 @@ impl<'c, 'a, 's, 't> Iterator for FunctionIter<'c, 'a, 's, 't> {
 }
 
 #[derive(Default)]
-struct ContextCache<'a> {
+struct ContextCache<'a, 's> {
+    module_cache: BasicModuleInfoCache<'a, 's>,
     procedure_cache: HashMap<PdbInternalSectionOffset, ExtendedProcedureInfo>,
     extended_module_cache: BTreeMap<u16, Result<ExtendedModuleInfo<'a>>>,
     inline_name_cache: BTreeMap<IdIndex, Result<String>>,
     full_rva_list: Option<Rc<Vec<u32>>>,
+}
+
+type BasicModuleInfoCache<'a, 's> = HashMap<u16, Result<Option<BasicModuleInfo<'a, 's>>>>;
+
+struct BasicModuleInfo<'a, 's> {
+    module_info: &'a ModuleInfo<'s>,
+    procedures: Vec<ProcedureSymbolFunction<'a>>,
 }
 
 /// The order of the fields matters for the lexicographical sort.
@@ -888,9 +910,9 @@ struct ProcedureSymbolFunction<'a> {
     type_index: TypeIndex,
 }
 
-enum PublicOrProcedureSymbol<'c, 'a, 's> {
+enum PublicOrProcedureSymbol<'c, 'a, 's, 'm> {
     Public(&'c PublicSymbolFunction<'a>),
-    Procedure(u16, &'a ModuleInfo<'s>, &'c ProcedureSymbolFunction<'a>),
+    Procedure(u16, &'a ModuleInfo<'s>, &'m ProcedureSymbolFunction<'a>),
 }
 
 #[derive(Default)]
