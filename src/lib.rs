@@ -157,11 +157,11 @@ impl<'s, S: Source<'s> + 's> ContextPdbData<'s, S> {
         )
     }
 
-    fn get_module_info(
-        &self,
+    fn get_module_info<'a>(
+        &'a self,
         module_index: u16,
-        module: &Module<'_>,
-    ) -> Result<Option<&ModuleInfo<'s>>> {
+        module: &Module<'a>,
+    ) -> Result<Option<&'a ModuleInfo<'s>>> {
         if let Some(m) = self.module_contents.get(&module_index) {
             return Ok(Some(m));
         }
@@ -224,7 +224,7 @@ pub struct Context<'a: 't, 's, 't, S: Source<'s> + 's> {
     type_formatter: MaybeOwned<'a, TypeFormatter<'t>>,
     modules: Vec<Module<'a>>,
     public_functions: Vec<PublicSymbolFunction<'a>>,
-    module_procedures: FrozenMap<u16, Vec<ProcedureSymbolFunction<'a>>>,
+    module_procedures: FrozenMap<u16, Box<(&'a ModuleInfo<'s>, Vec<ProcedureSymbolFunction<'a>>)>>,
     cache: RefCell<ContextCache<'a>>,
 }
 
@@ -346,7 +346,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
                     name,
                 }))
             }
-            PublicOrProcedureSymbol::Procedure(_, func) => {
+            PublicOrProcedureSymbol::Procedure(_, _, func) => {
                 let mut cache = self.cache.borrow_mut();
                 let extended_info = cache.procedure_cache.entry(func.offset).or_default();
                 let name = extended_info
@@ -382,7 +382,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             None => return Ok(None),
         };
 
-        let (module_index, proc) = match func {
+        let (module_index, module_info, proc) = match func {
             PublicOrProcedureSymbol::Public(func) => {
                 let function = Some(func.name.to_string().to_string());
                 let start_rva = match func.start_offset.to_rva(self.address_map) {
@@ -401,7 +401,9 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
                     }],
                 }));
             }
-            PublicOrProcedureSymbol::Procedure(module_index, proc) => (module_index, proc),
+            PublicOrProcedureSymbol::Procedure(module_index, module_info, proc) => {
+                (module_index, module_info, proc)
+            }
         };
 
         let mut cache = self.cache.borrow_mut();
@@ -420,12 +422,6 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             None => return Ok(None),
         };
         let end_rva = start_rva + proc.len;
-        let module = &self.modules[module_index as usize];
-        let module_info = self
-            .context_data
-            .get_module_info(module_index, module)
-            .unwrap()
-            .unwrap();
 
         let ExtendedModuleInfo {
             line_program,
@@ -527,7 +523,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             }
         }
         for module_index in 0..(self.modules.len() as u16) {
-            if let Ok(procedures) = self.get_module_procedures(module_index) {
+            if let Ok(Some((procedures, _))) = self.get_module_procedures(module_index) {
                 for proc in procedures {
                     if let Some(rva) = proc.offset.to_rva(self.address_map) {
                         list.push(rva.0);
@@ -540,26 +536,31 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         list
     }
 
-    fn get_module_procedures(&self, module_index: u16) -> Result<&[ProcedureSymbolFunction<'a>]> {
-        if let Some(procedures) = self.module_procedures.get(&module_index) {
-            return Ok(procedures);
-        }
-
-        let procedures = self.compute_module_procedures(module_index)?;
-        Ok(self.module_procedures.insert(module_index, procedures))
-    }
-
-    fn compute_module_procedures(
+    fn get_module_procedures(
         &self,
         module_index: u16,
-    ) -> Result<Vec<ProcedureSymbolFunction<'a>>> {
+    ) -> Result<Option<(&[ProcedureSymbolFunction<'a>], &'a ModuleInfo<'s>)>> {
+        if let Some((module_info, procedures)) = self.module_procedures.get(&module_index) {
+            return Ok(Some((procedures, module_info)));
+        }
+
         let module = &self.modules[module_index as usize];
         let module_info = match self.context_data.get_module_info(module_index, module)? {
             Some(m) => m,
             None => {
-                return Ok(Vec::new());
+                return Ok(None);
             }
         };
+        let procedures = self.compute_module_procedures(module_info)?;
+        let obj = Box::new((module_info, procedures));
+        let (module_info, procedures) = self.module_procedures.insert(module_index, obj);
+        Ok(Some((procedures, module_info)))
+    }
+
+    fn compute_module_procedures(
+        &self,
+        module_info: &'a ModuleInfo<'s>,
+    ) -> Result<Vec<ProcedureSymbolFunction<'a>>> {
         let mut symbols_iter = module_info.symbols()?;
         let mut functions = Vec::new();
         while let Some(symbol) = symbols_iter.next()? {
@@ -637,7 +638,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
     fn lookup_function(
         &self,
         offset: PdbInternalSectionOffset,
-    ) -> Option<PublicOrProcedureSymbol<'_, 'a>> {
+    ) -> Option<PublicOrProcedureSymbol<'_, 'a, 's>> {
         let sc_index = match self.section_contributions.binary_search_by(|sc| {
             if sc.section_index < offset.section {
                 Ordering::Less
@@ -659,25 +660,29 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         };
 
         let module_index = self.section_contributions[sc_index].module_index;
-        let module_procedures = self.get_module_procedures(module_index).ok()?;
-        if let Ok(procedure_index) = module_procedures.binary_search_by(|p| {
-            if p.offset.section < offset.section {
-                Ordering::Less
-            } else if p.offset.section > offset.section {
-                Ordering::Greater
-            } else if p.offset.offset + p.len <= offset.offset {
-                Ordering::Less
-            } else if p.offset.offset > offset.offset {
-                Ordering::Greater
-            } else {
-                Ordering::Equal
+        if let Some((module_procedures, module_info)) =
+            self.get_module_procedures(module_index).ok()?
+        {
+            if let Ok(procedure_index) = module_procedures.binary_search_by(|p| {
+                if p.offset.section < offset.section {
+                    Ordering::Less
+                } else if p.offset.section > offset.section {
+                    Ordering::Greater
+                } else if p.offset.offset + p.len <= offset.offset {
+                    Ordering::Less
+                } else if p.offset.offset > offset.offset {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            }) {
+                // Found a procedure at the requested offset.
+                return Some(PublicOrProcedureSymbol::Procedure(
+                    module_index,
+                    module_info,
+                    &module_procedures[procedure_index],
+                ));
             }
-        }) {
-            // Found a procedure at the requested offset.
-            return Some(PublicOrProcedureSymbol::Procedure(
-                module_index,
-                &module_procedures[procedure_index],
-            ));
         }
 
         // No procedure was found at this offset in the module that the section
@@ -894,9 +899,9 @@ struct ProcedureSymbolFunction<'a> {
     type_index: TypeIndex,
 }
 
-enum PublicOrProcedureSymbol<'c, 'a> {
+enum PublicOrProcedureSymbol<'c, 'a, 's> {
     Public(&'c PublicSymbolFunction<'a>),
-    Procedure(u16, &'c ProcedureSymbolFunction<'a>),
+    Procedure(u16, &'a ModuleInfo<'s>, &'c ProcedureSymbolFunction<'a>),
 }
 
 #[derive(Default)]
