@@ -692,7 +692,7 @@ struct ContextCache<'a, 's> {
 }
 
 struct BasicModuleInfoCache<'a, 's> {
-    cache: HashMap<u16, Result<Option<BasicModuleInfo<'a, 's>>>>,
+    cache: HashMap<u16, Option<BasicModuleInfo<'a, 's>>>,
     modules: Vec<Module<'a>>,
     module_info_provider: &'a dyn ModuleProvider<'s>,
 }
@@ -710,15 +710,10 @@ impl<'a, 's> BasicModuleInfoCache<'a, 's> {
         self.cache
             .entry(module_index)
             .or_insert_with(|| {
-                let module = &modules[module_index as usize];
-                let module_info = match module_info_provider.get_module_info(module)? {
-                    Some(m) => m,
-                    None => return Ok(None),
-                };
-                Ok(Some(BasicModuleInfo::try_from_module_info(module_info)?))
+                let module = modules.get(module_index as usize)?;
+                let module_info = module_info_provider.get_module_info(module).ok()??;
+                BasicModuleInfo::try_from_module_info(module_info).ok()
             })
-            .as_ref()
-            .ok()?
             .as_ref()
     }
 }
