@@ -225,10 +225,7 @@ pub struct Context<'a: 't, 's, 't, S: Source<'s> + 's> {
     modules: Vec<Module<'a>>,
     public_functions: Vec<PublicSymbolFunction<'a>>,
     module_procedures: FrozenMap<u16, Vec<ProcedureSymbolFunction<'a>>>,
-    procedure_cache: RefCell<ProcedureCache>,
-    extended_module_cache: RefCell<BTreeMap<u16, Result<ExtendedModuleInfo<'a>>>>,
-    inline_name_cache: RefCell<BTreeMap<IdIndex, Result<String>>>,
-    full_rva_list: RefCell<Option<Rc<Vec<u32>>>>,
+    cache: RefCell<ContextCache<'a>>,
 }
 
 impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
@@ -300,10 +297,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             modules,
             public_functions,
             module_procedures: FrozenMap::new(),
-            procedure_cache: RefCell::new(Default::default()),
-            extended_module_cache: RefCell::new(BTreeMap::new()),
-            inline_name_cache: RefCell::new(BTreeMap::new()),
-            full_rva_list: RefCell::new(Default::default()),
+            cache: Default::default(),
         })
     }
 
@@ -314,15 +308,11 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
 
     /// Iterate over all functions in the modules.
     pub fn functions(&self) -> FunctionIter<'_, 'a, 's, 't, S> {
-        let mut full_rva_list = self.full_rva_list.borrow_mut();
-        let full_rva_list = match &*full_rva_list {
-            Some(list) => list.clone(),
-            None => {
-                let list = Rc::new(self.compute_full_rva_list());
-                *full_rva_list = Some(list.clone());
-                list
-            }
-        };
+        let mut cache = self.cache.borrow_mut();
+        let full_rva_list = cache
+            .full_rva_list
+            .get_or_insert_with(|| Rc::new(self.compute_full_rva_list()))
+            .clone();
         FunctionIter {
             context: self,
             full_rva_list,
@@ -357,8 +347,8 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
                 }))
             }
             PublicOrProcedureSymbol::Procedure(_, func) => {
-                let mut procedure_cache = self.procedure_cache.borrow_mut();
-                let extended_info = procedure_cache.get_entry_mut(func.offset);
+                let mut cache = self.cache.borrow_mut();
+                let extended_info = cache.procedure_cache.entry(func.offset).or_default();
                 let name = extended_info
                     .get_name(func, &self.type_formatter)
                     .map(String::from);
@@ -414,8 +404,14 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             PublicOrProcedureSymbol::Procedure(module_index, proc) => (module_index, proc),
         };
 
-        let mut procedure_cache = self.procedure_cache.borrow_mut();
-        let proc_extended_info = procedure_cache.get_entry_mut(proc.offset);
+        let mut cache = self.cache.borrow_mut();
+        let ContextCache {
+            procedure_cache,
+            extended_module_cache,
+            inline_name_cache,
+            ..
+        } = &mut *cache;
+        let proc_extended_info = procedure_cache.entry(proc.offset).or_default();
         let function = proc_extended_info
             .get_name(proc, &self.type_formatter)
             .map(String::from);
@@ -431,7 +427,6 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             .unwrap()
             .unwrap();
 
-        let mut extended_module_cache = self.extended_module_cache.borrow_mut();
         let ExtendedModuleInfo {
             line_program,
             inlinees,
@@ -469,8 +464,6 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
 
         let mut inline_ranges =
             proc_extended_info.get_inline_ranges(module_info, proc, inlinees)?;
-
-        let mut inline_name_cache = self.inline_name_cache.borrow_mut();
 
         loop {
             let current_depth = (frames.len() - 1) as u16;
@@ -773,6 +766,14 @@ impl<'c, 'a, 's, 't, S: Source<'s> + 's> Iterator for FunctionIter<'c, 'a, 's, '
     }
 }
 
+#[derive(Default)]
+struct ContextCache<'a> {
+    procedure_cache: HashMap<PdbInternalSectionOffset, ExtendedProcedureInfo>,
+    extended_module_cache: BTreeMap<u16, Result<ExtendedModuleInfo<'a>>>,
+    inline_name_cache: BTreeMap<IdIndex, Result<String>>,
+    full_rva_list: Option<Rc<Vec<u32>>>,
+}
+
 /// The order of the fields matters for the lexicographical sort.
 #[derive(Debug, Clone, PartialOrd, PartialEq, Eq, Ord)]
 pub struct ModuleSectionContribution {
@@ -861,24 +862,6 @@ fn compute_section_contributions(
     Ok(section_contributions)
 }
 
-#[derive(Default)]
-struct ProcedureCache(HashMap<PdbInternalSectionOffset, ExtendedProcedureInfo>);
-
-impl ProcedureCache {
-    fn get_entry_mut(
-        &mut self,
-        start_offset: PdbInternalSectionOffset,
-    ) -> &mut ExtendedProcedureInfo {
-        self.0
-            .entry(start_offset)
-            .or_insert_with(|| ExtendedProcedureInfo {
-                name: None,
-                lines: None,
-                inline_ranges: None,
-            })
-    }
-}
-
 /// Offset and name of a function from a public symbol.
 #[derive(Clone, Debug)]
 struct PublicSymbolFunction<'s> {
@@ -919,6 +902,7 @@ enum PublicOrProcedureSymbol<'c, 'a> {
     Procedure(u16, &'c ProcedureSymbolFunction<'a>),
 }
 
+#[derive(Default)]
 struct ExtendedProcedureInfo {
     name: Option<Option<String>>,
     lines: Option<Result<Vec<CachedLineInfo>>>,
