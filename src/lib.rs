@@ -70,7 +70,6 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::mem;
 use std::ops::Bound;
-use std::ops::Deref;
 use std::rc::Rc;
 use std::{borrow::Cow, cell::RefCell, collections::BTreeMap};
 
@@ -228,7 +227,7 @@ pub struct Context<'a: 't, 's, 't, S: Source<'s> + 's> {
     module_procedures: FrozenMap<u16, Vec<ProcedureSymbolFunction<'a>>>,
     procedure_cache: RefCell<ProcedureCache>,
     extended_module_cache: RefCell<BTreeMap<u16, Result<ExtendedModuleInfo<'a>>>>,
-    inline_name_cache: RefCell<BTreeMap<IdIndex, Option<Rc<String>>>>,
+    inline_name_cache: RefCell<BTreeMap<IdIndex, Result<String>>>,
     full_rva_list: RefCell<Option<Rc<Vec<u32>>>>,
 }
 
@@ -471,6 +470,8 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         let mut inline_ranges =
             proc_extended_info.get_inline_ranges(module_info, proc, inlinees)?;
 
+        let mut inline_name_cache = self.inline_name_cache.borrow_mut();
+
         loop {
             let current_depth = (frames.len() - 1) as u16;
 
@@ -495,9 +496,13 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
                 Ok(index) => (&inline_ranges[index], &inline_ranges[index + 1..]),
                 Err(_) => break,
             };
-            let function = self
-                .get_inline_name(inline_range.inlinee)
-                .map(|name| name.deref().clone());
+
+            let function = inline_name_cache
+                .entry(inline_range.inlinee)
+                .or_insert_with(|| self.type_formatter.format_id(inline_range.inlinee))
+                .as_ref()
+                .ok()
+                .cloned();
             let file = inline_range
                 .file_index
                 .and_then(|file_index| self.resolve_filename(line_program, file_index));
@@ -727,18 +732,6 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             inlinees,
             line_program,
         })
-    }
-
-    fn get_inline_name(&self, id_index: IdIndex) -> Option<Rc<String>> {
-        let mut cache = self.inline_name_cache.borrow_mut();
-        cache
-            .entry(id_index)
-            .or_insert_with(|| match self.type_formatter.format_id(id_index) {
-                Ok(name) => Some(Rc::new(name)),
-                Err(_) => None,
-            })
-            .deref()
-            .clone()
     }
 
     fn resolve_filename(
