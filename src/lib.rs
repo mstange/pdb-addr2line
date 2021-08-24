@@ -67,8 +67,8 @@ use pdb::{
 };
 use range_collections::RangeSet;
 use std::cmp::Ordering;
-use std::collections::btree_map::Entry;
 use std::collections::HashMap;
+use std::mem;
 use std::ops::Bound;
 use std::ops::Deref;
 use std::rc::Rc;
@@ -227,7 +227,7 @@ pub struct Context<'a: 't, 's, 't, S: Source<'s> + 's> {
     public_functions: Vec<PublicSymbolFunction<'a>>,
     module_procedures: FrozenMap<u16, Vec<ProcedureSymbolFunction<'a>>>,
     procedure_cache: RefCell<ProcedureCache>,
-    extended_module_cache: RefCell<BTreeMap<u16, Rc<ExtendedModuleInfo<'a>>>>,
+    extended_module_cache: RefCell<BTreeMap<u16, Result<ExtendedModuleInfo<'a>>>>,
     inline_name_cache: RefCell<BTreeMap<IdIndex, Option<Rc<String>>>>,
     full_rva_list: RefCell<Option<Rc<Vec<u32>>>>,
 }
@@ -431,9 +431,16 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             .get_module_info(module_index, module)
             .unwrap()
             .unwrap();
-        let module = self.get_extended_module_info(module_index)?;
-        let line_program = &module.line_program;
-        let inlinees = &module.inlinees;
+
+        let mut extended_module_cache = self.extended_module_cache.borrow_mut();
+        let ExtendedModuleInfo {
+            line_program,
+            inlinees,
+        } = extended_module_cache
+            .entry(module_index)
+            .or_insert_with(|| self.compute_extended_module_info(module_index))
+            .as_mut()
+            .map_err(|err| mem::replace(err, Error::ExtendedModuleInfoUnsuccessful))?;
 
         let lines = proc_extended_info.get_lines(proc, line_program)?;
         let search = match lines.binary_search_by_key(&offset.offset, |li| li.start_offset) {
@@ -702,17 +709,6 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         Some(PublicOrProcedureSymbol::Public(fun))
     }
 
-    fn get_extended_module_info(&self, module_index: u16) -> Result<Rc<ExtendedModuleInfo<'a>>> {
-        let mut cache = self.extended_module_cache.borrow_mut();
-        match cache.entry(module_index) {
-            Entry::Occupied(e) => Ok(e.get().clone()),
-            Entry::Vacant(e) => {
-                let m = self.compute_extended_module_info(module_index)?;
-                Ok(e.insert(Rc::new(m)).clone())
-            }
-        }
-    }
-
     fn compute_extended_module_info(&self, module_index: u16) -> Result<ExtendedModuleInfo<'a>> {
         let module = &self.modules[module_index as usize];
         let module_info = self
@@ -956,24 +952,25 @@ impl ExtendedProcedureInfo {
         proc: &ProcedureSymbolFunction,
         line_program: &LineProgram,
     ) -> Result<&[CachedLineInfo]> {
-        let ref_to_result = self.lines.get_or_insert_with(|| {
-            let mut iterator = line_program.lines_at_offset(proc.offset);
-            let mut lines = Vec::new();
-            let mut next_item = iterator.next()?;
-            while let Some(line_info) = next_item {
-                next_item = iterator.next()?;
-                lines.push(CachedLineInfo {
-                    start_offset: line_info.offset.offset,
-                    file_index: line_info.file_index,
-                    line_start: line_info.line_start,
-                });
-            }
-            Ok(lines)
-        });
-        match ref_to_result {
-            Ok(v) => Ok(&v[..]),
-            Err(e) => Err(std::mem::replace(e, Error::ProcedureLinesUnsuccessful)),
-        }
+        let lines = self
+            .lines
+            .get_or_insert_with(|| {
+                let mut iterator = line_program.lines_at_offset(proc.offset);
+                let mut lines = Vec::new();
+                let mut next_item = iterator.next()?;
+                while let Some(line_info) = next_item {
+                    next_item = iterator.next()?;
+                    lines.push(CachedLineInfo {
+                        start_offset: line_info.offset.offset,
+                        file_index: line_info.file_index,
+                        line_start: line_info.line_start,
+                    });
+                }
+                Ok(lines)
+            })
+            .as_mut()
+            .map_err(|e| mem::replace(e, Error::ProcedureLinesUnsuccessful))?;
+        Ok(lines)
     }
 
     fn get_inline_ranges(
@@ -982,16 +979,12 @@ impl ExtendedProcedureInfo {
         proc: &ProcedureSymbolFunction,
         inlinees: &BTreeMap<IdIndex, Inlinee>,
     ) -> Result<&[InlineRange]> {
-        let ref_to_result = self
+        let inline_ranges = self
             .inline_ranges
-            .get_or_insert_with(|| compute_procedure_inline_ranges(module_info, proc, inlinees));
-        match ref_to_result {
-            Ok(v) => Ok(&v[..]),
-            Err(e) => Err(std::mem::replace(
-                e,
-                Error::ProcedureInlineRangesUnsuccessful,
-            )),
-        }
+            .get_or_insert_with(|| compute_procedure_inline_ranges(module_info, proc, inlinees))
+            .as_mut()
+            .map_err(|e| mem::replace(e, Error::ProcedureInlineRangesUnsuccessful))?;
+        Ok(inline_ranges)
     }
 }
 

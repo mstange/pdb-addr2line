@@ -26,6 +26,9 @@ pub enum Error {
 
     #[error("Getting the procedure inline ranges was unsuccessful.")]
     ProcedureInlineRangesUnsuccessful,
+
+    #[error("Getting the extended module info was unsuccessful.")]
+    ExtendedModuleInfoUnsuccessful,
 }
 
 impl From<pdb::Error> for Error {
