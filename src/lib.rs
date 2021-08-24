@@ -41,8 +41,6 @@
 //! }
 //! ```
 
-use elsa::FrozenMap;
-use elsa::FrozenVec;
 pub use maybe_owned;
 pub use pdb;
 
@@ -50,21 +48,15 @@ mod error;
 mod type_formatter;
 
 pub use error::Error;
-use pdb::Module;
-use pdb::PublicSymbol;
-use pdb::Rva;
-use pdb::SymbolTable;
 pub use type_formatter::*;
 
+use elsa::{FrozenMap, FrozenVec};
 use maybe_owned::MaybeOwned;
-use pdb::DebugInformation;
-use pdb::IdInformation;
-use pdb::TypeInformation;
-
 use pdb::{
-    AddressMap, FallibleIterator, FileIndex, IdIndex, InlineSiteSymbol, Inlinee, LineProgram,
-    ModuleInfo, PdbInternalSectionOffset, RawString, Source, StringTable, SymbolData, SymbolIndex,
-    SymbolIter, TypeIndex, PDB,
+    AddressMap, DebugInformation, FallibleIterator, FileIndex, IdIndex, IdInformation,
+    InlineSiteSymbol, Inlinee, LineProgram, Module, ModuleInfo, PdbInternalSectionOffset,
+    PublicSymbol, RawString, Rva, Source, StringTable, SymbolData, SymbolIndex, SymbolIter,
+    SymbolTable, TypeIndex, TypeInformation, PDB,
 };
 use range_collections::RangeSet;
 use std::cmp::Ordering;
