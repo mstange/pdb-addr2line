@@ -42,6 +42,7 @@
 //! ```
 
 use elsa::FrozenMap;
+use elsa::FrozenVec;
 pub use maybe_owned;
 pub use pdb;
 
@@ -100,7 +101,7 @@ pub struct ContextPdbData<'s, S: Source<'s> + 's> {
     /// ModuleInfo objects are stored on this object (outside Context) so that the
     /// Context can internally store objects which have a lifetime dependency on
     /// ModuleInfo, such as Inlinees, LinePrograms, and RawStrings from modules.
-    module_contents: FrozenMap<u16, Box<ModuleInfo<'s>>>,
+    module_infos: FrozenVec<Box<ModuleInfo<'s>>>,
 
     address_map: AddressMap<'s>,
     string_table: Option<StringTable<'s>>,
@@ -124,7 +125,7 @@ impl<'s, S: Source<'s> + 's> ContextPdbData<'s, S> {
 
         Ok(Self {
             pdb: RefCell::new(pdb),
-            module_contents: FrozenMap::new(),
+            module_infos: FrozenVec::new(),
             global_symbols,
             debug_info,
             type_info,
@@ -135,7 +136,7 @@ impl<'s, S: Source<'s> + 's> ContextPdbData<'s, S> {
     }
 
     /// Create a [`Context`]. This uses the default [`TypeFormatter`] settings.
-    pub fn make_context(&self) -> Result<Context<'_, 's, '_, S>> {
+    pub fn make_context(&self) -> Result<Context<'_, 's, '_>> {
         self.make_context_with_formatter_flags(Default::default())
     }
 
@@ -143,7 +144,7 @@ impl<'s, S: Source<'s> + 's> ContextPdbData<'s, S> {
     pub fn make_context_with_formatter_flags(
         &self,
         flags: TypeFormatterFlags,
-    ) -> Result<Context<'_, 's, '_, S>> {
+    ) -> Result<Context<'_, 's, '_>> {
         let type_formatter =
             TypeFormatter::new(&self.debug_info, &self.type_info, &self.id_info, flags)?;
 
@@ -156,24 +157,25 @@ impl<'s, S: Source<'s> + 's> ContextPdbData<'s, S> {
             MaybeOwned::Owned(type_formatter),
         )
     }
+}
 
-    fn get_module_info<'a>(
-        &'a self,
-        module_index: u16,
-        module: &Module<'a>,
-    ) -> Result<Option<&'a ModuleInfo<'s>>> {
-        if let Some(m) = self.module_contents.get(&module_index) {
-            return Ok(Some(m));
-        }
+/// This trait is only needed for consumers who want to call Context::new_from_parts
+/// manually, instead of using ContextPdbData. If you use ContextPdbData you do not
+/// need to worry about thsi.
+/// This trait allows Context to request parsing of module info on-demand. It also
+/// does some lifetime acrobatics so that Context can cache objects which have a
+/// lifetime dependency on the module info.
+pub trait ModuleProvider<'s> {
+    /// Get the module info for this module from the PDB.
+    fn get_module_info(&self, module: &Module) -> Result<Option<&ModuleInfo<'s>>>;
+}
+
+impl<'s, S: Source<'s> + 's> ModuleProvider<'s> for ContextPdbData<'s, S> {
+    fn get_module_info(&self, module: &Module) -> Result<Option<&ModuleInfo<'s>>> {
         let mut pdb = self.pdb.borrow_mut();
-        if let Some(module_info) = pdb.module_info(module)? {
-            Ok(Some(
-                self.module_contents
-                    .insert(module_index, Box::new(module_info)),
-            ))
-        } else {
-            Ok(None)
-        }
+        Ok(pdb
+            .module_info(module)?
+            .map(|module_info| self.module_infos.push_get(Box::new(module_info))))
     }
 }
 
@@ -216,8 +218,8 @@ pub struct Frame<'a> {
 }
 
 /// The main API of this crate. Resolves addresses to function information.
-pub struct Context<'a: 't, 's, 't, S: Source<'s> + 's> {
-    context_data: &'a ContextPdbData<'s, S>,
+pub struct Context<'a: 't, 's, 't> {
+    module_provider: &'a dyn ModuleProvider<'s>,
     address_map: &'a AddressMap<'s>,
     section_contributions: Vec<ModuleSectionContribution>,
     string_table: Option<&'a StringTable<'s>>,
@@ -228,20 +230,15 @@ pub struct Context<'a: 't, 's, 't, S: Source<'s> + 's> {
     cache: RefCell<ContextCache<'a>>,
 }
 
-impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
+impl<'a, 's, 't> Context<'a, 's, 't> {
     /// Create a [`Context`] manually. Most consumers will want to use
     /// [`ContextPdbData::make_context`] instead.
     ///
     /// However, if you interact with a PDB directly and parse some of its contents
     /// for other uses, you may want to call this method in order to avoid overhead
     /// from repeatedly parsing the same streams.
-    /// TODO: This now always requires a ContextPdbData, so I've made it non-public.
-    /// The reason for that is that we need a way to parse modules on-demand, and
-    /// store the module outside Context so that things inside the Context can have
-    /// a lifetime dependency on the module. Please let me know if you find a more
-    /// elegant way to solve this.
-    fn new_from_parts(
-        context_data: &'a ContextPdbData<'s, S>,
+    pub fn new_from_parts(
+        module_provider: &'a dyn ModuleProvider<'s>,
         address_map: &'a AddressMap<'s>,
         global_symbols: &'a SymbolTable<'s>,
         string_table: Option<&'a StringTable<'s>>,
@@ -289,7 +286,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         }
 
         Ok(Self {
-            context_data,
+            module_provider,
             address_map,
             section_contributions,
             string_table,
@@ -307,7 +304,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
     }
 
     /// Iterate over all functions in the modules.
-    pub fn functions(&self) -> FunctionIter<'_, 'a, 's, 't, S> {
+    pub fn functions(&self) -> FunctionIter<'_, 'a, 's, 't> {
         let mut cache = self.cache.borrow_mut();
         let full_rva_list = cache
             .full_rva_list
@@ -545,7 +542,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         }
 
         let module = &self.modules[module_index as usize];
-        let module_info = match self.context_data.get_module_info(module_index, module)? {
+        let module_info = match self.module_provider.get_module_info(module)? {
             Some(m) => m,
             None => {
                 return Ok(None);
@@ -745,13 +742,13 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
 
 /// An iterator over all functions in a [`Context`].
 #[derive(Clone)]
-pub struct FunctionIter<'c, 'a, 's, 't, S: Source<'s> + 's> {
-    context: &'c Context<'a, 's, 't, S>,
+pub struct FunctionIter<'c, 'a, 's, 't> {
+    context: &'c Context<'a, 's, 't>,
     full_rva_list: Rc<Vec<u32>>,
     cur_index: usize,
 }
 
-impl<'c, 'a, 's, 't, S: Source<'s> + 's> Iterator for FunctionIter<'c, 'a, 's, 't, S> {
+impl<'c, 'a, 's, 't> Iterator for FunctionIter<'c, 'a, 's, 't> {
     type Item = Function;
 
     fn next(&mut self) -> Option<Function> {
