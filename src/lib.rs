@@ -211,12 +211,10 @@ pub struct Frame<'a> {
 
 /// The main API of this crate. Resolves addresses to function information.
 pub struct Context<'a: 't, 's, 't> {
-    module_provider: &'a dyn ModuleProvider<'s>,
     address_map: &'a AddressMap<'s>,
     section_contributions: Vec<ModuleSectionContribution>,
     string_table: Option<&'a StringTable<'s>>,
     type_formatter: MaybeOwned<'a, TypeFormatter<'t>>,
-    modules: Vec<Module<'a>>,
     public_functions: Vec<PublicSymbolFunction<'a>>,
     cache: RefCell<ContextCache<'a, 's>>,
 }
@@ -229,7 +227,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     /// for other uses, you may want to call this method in order to avoid overhead
     /// from repeatedly parsing the same streams.
     pub fn new_from_parts(
-        module_provider: &'a dyn ModuleProvider<'s>,
+        module_info_provider: &'a dyn ModuleProvider<'s>,
         address_map: &'a AddressMap<'s>,
         global_symbols: &'a SymbolTable<'s>,
         string_table: Option<&'a StringTable<'s>>,
@@ -277,14 +275,22 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         }
 
         Ok(Self {
-            module_provider,
             address_map,
             section_contributions,
             string_table,
             type_formatter,
-            modules,
             public_functions,
-            cache: Default::default(),
+            cache: RefCell::new(ContextCache {
+                module_cache: BasicModuleInfoCache {
+                    cache: Default::default(),
+                    modules,
+                    module_info_provider,
+                },
+                procedure_cache: Default::default(),
+                extended_module_cache: Default::default(),
+                inline_name_cache: Default::default(),
+                full_rva_list: Default::default(),
+            }),
         })
     }
 
@@ -348,7 +354,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
             PublicOrProcedureSymbol::Procedure(_, _, func) => {
                 let extended_info = procedure_cache.entry(func.offset).or_default();
                 let name = extended_info
-                    .get_name(func, &self.type_formatter)
+                    .get_name(func, &self.type_formatter, &self.public_functions)
                     .map(String::from);
                 let start_rva = match func.offset.to_rva(self.address_map) {
                     Some(rva) => rva.0,
@@ -416,7 +422,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
 
         let proc_extended_info = procedure_cache.entry(proc.offset).or_default();
         let function = proc_extended_info
-            .get_name(proc, &self.type_formatter)
+            .get_name(proc, &self.type_formatter, &self.public_functions)
             .map(String::from);
         let start_rva = match proc.offset.to_rva(self.address_map) {
             Some(rva) => rva.0,
@@ -523,12 +529,10 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                 list.push(rva.0);
             }
         }
-        for module_index in 0..(self.modules.len() as u16) {
-            let basic_module_info = module_cache
-                .entry(module_index)
-                .or_insert_with(|| self.compute_basic_module_info(module_index))
-                .as_ref();
-            if let Ok(Some(BasicModuleInfo { procedures, .. })) = basic_module_info {
+        for module_index in 0..module_cache.module_count() {
+            if let Some(BasicModuleInfo { procedures, .. }) =
+                module_cache.get_basic_module_info(module_index)
+            {
                 for proc in procedures {
                     if let Some(rva) = proc.offset.to_rva(self.address_map) {
                         list.push(rva.0);
@@ -541,98 +545,10 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         list
     }
 
-    fn compute_basic_module_info(
-        &self,
-        module_index: u16,
-    ) -> Result<Option<BasicModuleInfo<'a, 's>>> {
-        let module = &self.modules[module_index as usize];
-        let module_info = match self.module_provider.get_module_info(module)? {
-            Some(m) => m,
-            None => {
-                return Ok(None);
-            }
-        };
-        let mut symbols_iter = module_info.symbols()?;
-        let mut functions = Vec::new();
-        while let Some(symbol) = symbols_iter.next()? {
-            match symbol.parse() {
-                Ok(SymbolData::Procedure(proc)) => {
-                    if proc.len == 0 {
-                        continue;
-                    }
-
-                    let name = if proc.type_index != TypeIndex(0) {
-                        // The arguments are stored in the type. Use the argument-less name,
-                        // we will stringify the arguments from the type when needed.
-                        proc.name
-                    } else {
-                        // We have no type, so proc.name might be an argument-less string.
-                        // If we have a public symbol at this address which is a decorated name
-                        // (starts with a '?'), prefer to use that because it'll usually include
-                        // the arguments.
-                        if let Ok(public_fun_index) = self
-                            .public_functions
-                            .binary_search_by_key(&(proc.offset.section, proc.offset.offset), |f| {
-                                (f.start_offset.section, f.start_offset.offset)
-                            })
-                        {
-                            let name = self.public_functions[public_fun_index].name;
-                            if name.as_bytes().starts_with(&[b'?']) {
-                                name
-                            } else {
-                                proc.name
-                            }
-                        } else {
-                            proc.name
-                        }
-                    };
-
-                    functions.push(ProcedureSymbolFunction {
-                        offset: proc.offset,
-                        len: proc.len,
-                        name,
-                        symbol_index: symbol.index(),
-                        end_symbol_index: proc.end,
-                        type_index: proc.type_index,
-                    });
-                }
-                Ok(SymbolData::Thunk(thunk)) => {
-                    if thunk.len == 0 {
-                        continue;
-                    }
-
-                    // thunk.name is usually a decorated name, so it includes the arguments,
-                    // and we don't have to get a name from the public functions the way we
-                    // do above for procedures.
-
-                    // Treat thunks as procedures. This isn't perfectly accurate but it
-                    // doesn't cause any harm.
-                    functions.push(ProcedureSymbolFunction {
-                        offset: thunk.offset,
-                        len: thunk.len as u32,
-                        name: thunk.name,
-                        symbol_index: symbol.index(),
-                        end_symbol_index: thunk.end,
-                        type_index: TypeIndex(0),
-                    });
-                }
-                _ => {}
-            }
-        }
-        // Sort and de-duplicate, so that we can use binary search during lookup.
-        functions.sort_unstable_by_key(|p| (p.offset.section, p.offset.offset));
-        functions.dedup_by_key(|p| p.offset);
-
-        Ok(Some(BasicModuleInfo {
-            module_info,
-            procedures: functions,
-        }))
-    }
-
     fn lookup_function<'m>(
         &self,
         offset: PdbInternalSectionOffset,
-        module_cache: &'m mut HashMap<u16, Result<Option<BasicModuleInfo<'a, 's>>>>,
+        module_cache: &'m mut BasicModuleInfoCache<'a, 's>,
     ) -> Option<PublicOrProcedureSymbol<'_, 'a, 's, 'm>> {
         let sc_index = match self.section_contributions.binary_search_by(|sc| {
             if sc.section_index < offset.section {
@@ -655,11 +571,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         };
 
         let module_index = self.section_contributions[sc_index].module_index;
-        let basic_module_info = module_cache
-            .entry(module_index)
-            .or_insert_with(|| self.compute_basic_module_info(module_index))
-            .as_ref()
-            .ok()?;
+        let basic_module_info = module_cache.get_basic_module_info(module_index);
 
         if let Some(BasicModuleInfo {
             procedures,
@@ -771,7 +683,6 @@ impl<'c, 'a, 's, 't> Iterator for FunctionIter<'c, 'a, 's, 't> {
     }
 }
 
-#[derive(Default)]
 struct ContextCache<'a, 's> {
     module_cache: BasicModuleInfoCache<'a, 's>,
     procedure_cache: HashMap<PdbInternalSectionOffset, ExtendedProcedureInfo>,
@@ -780,11 +691,93 @@ struct ContextCache<'a, 's> {
     full_rva_list: Option<Rc<Vec<u32>>>,
 }
 
-type BasicModuleInfoCache<'a, 's> = HashMap<u16, Result<Option<BasicModuleInfo<'a, 's>>>>;
+struct BasicModuleInfoCache<'a, 's> {
+    cache: HashMap<u16, Result<Option<BasicModuleInfo<'a, 's>>>>,
+    modules: Vec<Module<'a>>,
+    module_info_provider: &'a dyn ModuleProvider<'s>,
+}
+
+impl<'a, 's> BasicModuleInfoCache<'a, 's> {
+    pub fn module_count(&self) -> u16 {
+        self.modules.len() as u16
+    }
+
+    pub fn get_basic_module_info(&mut self, module_index: u16) -> Option<&BasicModuleInfo<'a, 's>> {
+        // TODO: 2021 edition
+        let modules = &self.modules;
+        let module_info_provider = self.module_info_provider;
+
+        self.cache
+            .entry(module_index)
+            .or_insert_with(|| {
+                let module = &modules[module_index as usize];
+                let module_info = match module_info_provider.get_module_info(module)? {
+                    Some(m) => m,
+                    None => return Ok(None),
+                };
+                Ok(Some(BasicModuleInfo::try_from_module_info(module_info)?))
+            })
+            .as_ref()
+            .ok()?
+            .as_ref()
+    }
+}
 
 struct BasicModuleInfo<'a, 's> {
     module_info: &'a ModuleInfo<'s>,
     procedures: Vec<ProcedureSymbolFunction<'a>>,
+}
+
+impl<'a, 's> BasicModuleInfo<'a, 's> {
+    pub fn try_from_module_info(
+        module_info: &'a ModuleInfo<'s>,
+    ) -> Result<BasicModuleInfo<'a, 's>> {
+        let mut symbols_iter = module_info.symbols()?;
+        let mut functions = Vec::new();
+        while let Some(symbol) = symbols_iter.next()? {
+            match symbol.parse() {
+                Ok(SymbolData::Procedure(proc)) => {
+                    if proc.len == 0 {
+                        continue;
+                    }
+
+                    functions.push(ProcedureSymbolFunction {
+                        offset: proc.offset,
+                        len: proc.len,
+                        name: proc.name,
+                        symbol_index: symbol.index(),
+                        end_symbol_index: proc.end,
+                        type_index: proc.type_index,
+                    });
+                }
+                Ok(SymbolData::Thunk(thunk)) => {
+                    if thunk.len == 0 {
+                        continue;
+                    }
+
+                    // Treat thunks as procedures. This isn't perfectly accurate but it
+                    // doesn't cause any harm.
+                    functions.push(ProcedureSymbolFunction {
+                        offset: thunk.offset,
+                        len: thunk.len as u32,
+                        name: thunk.name,
+                        symbol_index: symbol.index(),
+                        end_symbol_index: thunk.end,
+                        type_index: TypeIndex(0),
+                    });
+                }
+                _ => {}
+            }
+        }
+        // Sort and de-duplicate, so that we can use binary search during lookup.
+        functions.sort_unstable_by_key(|p| (p.offset.section, p.offset.offset));
+        functions.dedup_by_key(|p| p.offset);
+
+        Ok(BasicModuleInfo {
+            module_info,
+            procedures: functions,
+        })
+    }
 }
 
 /// The order of the fields matters for the lexicographical sort.
@@ -927,9 +920,26 @@ impl ExtendedProcedureInfo {
         &mut self,
         proc: &ProcedureSymbolFunction,
         type_formatter: &TypeFormatter,
+        public_functions: &[PublicSymbolFunction],
     ) -> Option<&str> {
         self.name
             .get_or_insert_with(|| {
+                if proc.type_index == TypeIndex(0) && !proc.name.as_bytes().starts_with(&[b'?']) {
+                    // We have no type, so proc.name might be an argument-less string.
+                    // If we have a public symbol at this address which is a decorated name
+                    // (starts with a '?'), prefer to use that because it'll usually include
+                    // the arguments.
+                    if let Ok(public_fun_index) = public_functions
+                        .binary_search_by_key(&(proc.offset.section, proc.offset.offset), |f| {
+                            (f.start_offset.section, f.start_offset.offset)
+                        })
+                    {
+                        let name = public_functions[public_fun_index].name;
+                        if name.as_bytes().starts_with(&[b'?']) {
+                            return Some(name.to_string().to_string());
+                        }
+                    }
+                }
                 type_formatter
                     .format_function(&proc.name.to_string(), proc.type_index)
                     .ok()
