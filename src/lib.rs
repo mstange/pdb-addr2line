@@ -51,7 +51,7 @@ pub use error::Error;
 pub use type_formatter::*;
 
 use elsa::FrozenVec;
-use maybe_owned::MaybeOwned;
+use maybe_owned::{MaybeOwned, MaybeOwnedMut};
 use pdb::{
     AddressMap, DebugInformation, FallibleIterator, FileIndex, IdIndex, IdInformation,
     InlineSiteSymbol, Inlinee, LineProgram, Module, ModuleInfo, PdbInternalSectionOffset,
@@ -87,8 +87,8 @@ type Result<V> = std::result::Result<V, Error>;
 /// which have a lifetime dependency on [`pdb::ModuleInfo`], so the [`ModuleInfo`] has to be
 /// owned outside of the [`Context`]. So the [`ContextPdbData`] object acts as that external
 /// [`ModuleInfo`] owner.
-pub struct ContextPdbData<'s, S: Source<'s> + 's> {
-    pdb: RefCell<PDB<'s, S>>,
+pub struct ContextPdbData<'p, 's, S: Source<'s> + 's> {
+    pdb: RefCell<MaybeOwnedMut<'p, PDB<'s, S>>>,
 
     /// ModuleInfo objects are stored on this object (outside Context) so that the
     /// Context can internally store objects which have a lifetime dependency on
@@ -103,11 +103,23 @@ pub struct ContextPdbData<'s, S: Source<'s> + 's> {
     id_info: IdInformation<'s>,
 }
 
-impl<'s, S: Source<'s> + 's> ContextPdbData<'s, S> {
+impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
     /// Create a [`ContextPdbData`] from a [`PDB`](pdb::PDB). This parses many of the PDB
-    /// streams and stores them in the [`ContextPdbData`]. Most importantly, it builds
-    /// a list of all the [`ModuleInfo`](pdb::ModuleInfo) objects in the PDB.
-    pub fn try_from_pdb(mut pdb: PDB<'s, S>) -> Result<Self> {
+    /// streams and stores them in the [`ContextPdbData`].
+    /// This creator function takes ownership of the pdb object and never gives it back.
+    pub fn try_from_pdb(pdb: PDB<'s, S>) -> Result<Self> {
+        Self::try_from_maybe_owned(MaybeOwnedMut::Owned(pdb))
+    }
+
+    /// Create a [`ContextPdbData`] from a [`PDB`](pdb::PDB). This parses many of the PDB
+    /// streams and stores them in the [`ContextPdbData`].
+    /// This creator function takes an exclusive reference to the pdb object, for consumers
+    /// that want to keep using the pdb object once the `ContextPdbData` object is dropped.
+    pub fn try_from_pdb_ref(pdb: &'p mut PDB<'s, S>) -> Result<Self> {
+        Self::try_from_maybe_owned(MaybeOwnedMut::Borrowed(pdb))
+    }
+
+    fn try_from_maybe_owned(mut pdb: MaybeOwnedMut<'p, PDB<'s, S>>) -> Result<Self> {
         let global_symbols = pdb.global_symbols()?;
         let debug_info = pdb.debug_information()?;
         let type_info = pdb.type_information()?;
@@ -162,7 +174,7 @@ pub trait ModuleProvider<'s> {
     fn get_module_info(&self, module: &Module) -> Result<Option<&ModuleInfo<'s>>>;
 }
 
-impl<'s, S: Source<'s> + 's> ModuleProvider<'s> for ContextPdbData<'s, S> {
+impl<'p, 's, S: Source<'s> + 's> ModuleProvider<'s> for ContextPdbData<'p, 's, S> {
     fn get_module_info(&self, module: &Module) -> Result<Option<&ModuleInfo<'s>>> {
         let mut pdb = self.pdb.borrow_mut();
         Ok(pdb
