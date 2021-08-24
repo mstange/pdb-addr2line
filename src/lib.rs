@@ -432,7 +432,7 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
             inlinees,
         } = extended_module_cache
             .entry(module_index)
-            .or_insert_with(|| self.compute_extended_module_info(module_index))
+            .or_insert_with(|| self.compute_extended_module_info(module_info))
             .as_mut()
             .map_err(|err| mem::replace(err, Error::ExtendedModuleInfoUnsuccessful))?;
 
@@ -707,13 +707,10 @@ impl<'a, 's, 't, S: Source<'s> + 's> Context<'a, 's, 't, S> {
         Some(PublicOrProcedureSymbol::Public(fun))
     }
 
-    fn compute_extended_module_info(&self, module_index: u16) -> Result<ExtendedModuleInfo<'a>> {
-        let module = &self.modules[module_index as usize];
-        let module_info = self
-            .context_data
-            .get_module_info(module_index, module)
-            .unwrap()
-            .unwrap();
+    fn compute_extended_module_info(
+        &self,
+        module_info: &'a ModuleInfo,
+    ) -> Result<ExtendedModuleInfo<'a>> {
         let line_program = module_info.line_program()?;
 
         let inlinees: BTreeMap<IdIndex, Inlinee> = module_info
