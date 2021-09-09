@@ -1,0 +1,19 @@
+name: check
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+
+    - uses: actions/checkout@v1
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Run cargo-check
+      run: |
+        cargo install cargo-check
+        cargo check --verbose
