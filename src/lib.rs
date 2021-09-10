@@ -50,7 +50,7 @@ mod type_formatter;
 pub use error::Error;
 pub use type_formatter::*;
 
-use elsa::FrozenVec;
+use elsa::FrozenMap;
 use maybe_owned::{MaybeOwned, MaybeOwnedMut};
 use pdb::{
     AddressMap, DebugInformation, FallibleIterator, FileIndex, IdIndex, IdInformation,
@@ -93,7 +93,7 @@ pub struct ContextPdbData<'p, 's, S: Source<'s> + 's> {
     /// ModuleInfo objects are stored on this object (outside Context) so that the
     /// Context can internally store objects which have a lifetime dependency on
     /// ModuleInfo, such as Inlinees, LinePrograms, and RawStrings from modules.
-    module_infos: FrozenVec<Box<ModuleInfo<'s>>>,
+    module_infos: FrozenMap<u16, Box<ModuleInfo<'s>>>,
 
     address_map: AddressMap<'s>,
     string_table: Option<StringTable<'s>>,
@@ -129,7 +129,7 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
 
         Ok(Self {
             pdb: RefCell::new(pdb),
-            module_infos: FrozenVec::new(),
+            module_infos: FrozenMap::new(),
             global_symbols,
             debug_info,
             type_info,
@@ -139,8 +139,37 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
         })
     }
 
+    /// Create a [`TypeFormatter`]. This uses the default [`TypeFormatter`] settings.
+    pub fn make_type_formatter(&self) -> Result<TypeFormatter<'_, 's>> {
+        self.make_type_formatter_with_flags(Default::default())
+    }
+
+    /// Create a [`TypeFormatter`], using the specified [`TypeFormatter`] flags.
+    pub fn make_type_formatter_with_flags(
+        &self,
+        flags: TypeFormatterFlags,
+    ) -> Result<TypeFormatter<'_, 's>> {
+        // Get the list of all modules. This only reads the list, not the actual module
+        // info. To get the module info, you need to call pdb.module_info(&module), and
+        // that's when the actual module stream is read. We use the list of modules so
+        // that we can call pdb.module_info with the right module, which we look up based
+        // on its module_index.
+        let modules = self.debug_info.modules()?.collect::<Vec<_>>()?;
+        let modules = Rc::new(modules);
+
+        Ok(TypeFormatter::new_from_parts(
+            self,
+            modules.clone(),
+            &self.debug_info,
+            &self.type_info,
+            &self.id_info,
+            self.string_table.as_ref(),
+            flags,
+        )?)
+    }
+
     /// Create a [`Context`]. This uses the default [`TypeFormatter`] settings.
-    pub fn make_context(&self) -> Result<Context<'_, 's, '_>> {
+    pub fn make_context(&self) -> Result<Context<'_, 's>> {
         self.make_context_with_formatter_flags(Default::default())
     }
 
@@ -148,9 +177,9 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
     pub fn make_context_with_formatter_flags(
         &self,
         flags: TypeFormatterFlags,
-    ) -> Result<Context<'_, 's, '_>> {
-        let type_formatter =
-            TypeFormatter::new(&self.debug_info, &self.type_info, &self.id_info, flags)?;
+    ) -> Result<Context<'_, 's>> {
+        let type_formatter = self.make_type_formatter_with_flags(flags)?;
+        let modules = type_formatter.modules.clone();
 
         Context::new_from_parts(
             self,
@@ -159,27 +188,26 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
             self.string_table.as_ref(),
             &self.debug_info,
             MaybeOwned::Owned(type_formatter),
+            modules,
         )
     }
 }
 
-/// This trait is only needed for consumers who want to call Context::new_from_parts
-/// manually, instead of using ContextPdbData. If you use ContextPdbData you do not
-/// need to worry about thsi.
-/// This trait allows Context to request parsing of module info on-demand. It also
-/// does some lifetime acrobatics so that Context can cache objects which have a
-/// lifetime dependency on the module info.
-pub trait ModuleProvider<'s> {
-    /// Get the module info for this module from the PDB.
-    fn get_module_info(&self, module: &Module) -> Result<Option<&ModuleInfo<'s>>>;
-}
-
 impl<'p, 's, S: Source<'s> + 's> ModuleProvider<'s> for ContextPdbData<'p, 's, S> {
-    fn get_module_info(&self, module: &Module) -> Result<Option<&ModuleInfo<'s>>> {
+    fn get_module_info(
+        &self,
+        module_index: u16,
+        module: &Module,
+    ) -> std::result::Result<Option<&ModuleInfo<'s>>, pdb::Error> {
+        if let Some(module_info) = self.module_infos.get(&module_index) {
+            return Ok(Some(module_info));
+        }
+
         let mut pdb = self.pdb.borrow_mut();
-        Ok(pdb
-            .module_info(module)?
-            .map(|module_info| self.module_infos.push_get(Box::new(module_info))))
+        Ok(pdb.module_info(module)?.map(|module_info| {
+            self.module_infos
+                .insert(module_index, Box::new(module_info))
+        }))
     }
 }
 
@@ -222,16 +250,16 @@ pub struct Frame<'a> {
 }
 
 /// The main API of this crate. Resolves addresses to function information.
-pub struct Context<'a: 't, 's, 't> {
+pub struct Context<'a, 's> {
     address_map: &'a AddressMap<'s>,
     section_contributions: Vec<ModuleSectionContribution>,
     string_table: Option<&'a StringTable<'s>>,
-    type_formatter: MaybeOwned<'a, TypeFormatter<'t>>,
+    type_formatter: MaybeOwned<'a, TypeFormatter<'a, 's>>,
     public_functions: Vec<PublicSymbolFunction<'a>>,
     cache: RefCell<ContextCache<'a, 's>>,
 }
 
-impl<'a, 's, 't> Context<'a, 's, 't> {
+impl<'a, 's> Context<'a, 's> {
     /// Create a [`Context`] manually. Most consumers will want to use
     /// [`ContextPdbData::make_context`] instead.
     ///
@@ -244,7 +272,8 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         global_symbols: &'a SymbolTable<'s>,
         string_table: Option<&'a StringTable<'s>>,
         debug_info: &'a DebugInformation,
-        type_formatter: MaybeOwned<'a, TypeFormatter<'t>>,
+        type_formatter: MaybeOwned<'a, TypeFormatter<'a, 's>>,
+        modules: Rc<Vec<Module<'a>>>,
     ) -> Result<Self> {
         let mut public_functions = Vec::new();
 
@@ -273,19 +302,6 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
         // address. This allows reading module info on demand.
         let section_contributions = compute_section_contributions(debug_info)?;
 
-        // Get the list of all modules. This only reads the list, not the actual module
-        // info. To get the module info, you need to call pdb.module_info(&module), and
-        // that's when the actual module stream is read. We use the list of modules so
-        // that we can call pdb.module_info with the right module, which we look up based
-        // on its module_index.
-        // Instead of building this list upfront, we could also iterate the iterator on
-        // demand.
-        let mut module_iter = debug_info.modules()?;
-        let mut modules = Vec::new();
-        while let Some(module) = module_iter.next()? {
-            modules.push(module);
-        }
-
         Ok(Self {
             address_map,
             section_contributions,
@@ -312,7 +328,7 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
     }
 
     /// Iterate over all functions in the modules.
-    pub fn functions(&self) -> FunctionIter<'_, 'a, 's, 't> {
+    pub fn functions(&self) -> FunctionIter<'_, 'a, 's> {
         let mut cache = self.cache.borrow_mut();
         let ContextCache {
             full_rva_list,
@@ -363,10 +379,15 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
                     name,
                 }))
             }
-            PublicOrProcedureSymbol::Procedure(_, _, func) => {
+            PublicOrProcedureSymbol::Procedure(module_index, _, func) => {
                 let extended_info = procedure_cache.entry(func.offset).or_default();
                 let name = extended_info
-                    .get_name(func, &self.type_formatter, &self.public_functions)
+                    .get_name(
+                        func,
+                        &self.type_formatter,
+                        &self.public_functions,
+                        module_index,
+                    )
                     .map(String::from);
                 let start_rva = match func.offset.to_rva(self.address_map) {
                     Some(rva) => rva.0,
@@ -434,7 +455,12 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
 
         let proc_extended_info = procedure_cache.entry(proc.offset).or_default();
         let function = proc_extended_info
-            .get_name(proc, &self.type_formatter, &self.public_functions)
+            .get_name(
+                proc,
+                &self.type_formatter,
+                &self.public_functions,
+                module_index,
+            )
             .map(String::from);
         let start_rva = match proc.offset.to_rva(self.address_map) {
             Some(rva) => rva.0,
@@ -507,7 +533,10 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
 
             let function = inline_name_cache
                 .entry(inline_range.inlinee)
-                .or_insert_with(|| self.type_formatter.format_id(inline_range.inlinee))
+                .or_insert_with(|| {
+                    self.type_formatter
+                        .format_id(module_index, inline_range.inlinee)
+                })
                 .as_ref()
                 .ok()
                 .cloned();
@@ -672,13 +701,13 @@ impl<'a, 's, 't> Context<'a, 's, 't> {
 
 /// An iterator over all functions in a [`Context`].
 #[derive(Clone)]
-pub struct FunctionIter<'c, 'a, 's, 't> {
-    context: &'c Context<'a, 's, 't>,
+pub struct FunctionIter<'c, 'a, 's> {
+    context: &'c Context<'a, 's>,
     full_rva_list: Rc<Vec<u32>>,
     cur_index: usize,
 }
 
-impl<'c, 'a, 's, 't> Iterator for FunctionIter<'c, 'a, 's, 't> {
+impl<'c, 'a, 's> Iterator for FunctionIter<'c, 'a, 's> {
     type Item = Function;
 
     fn next(&mut self) -> Option<Function> {
@@ -705,7 +734,7 @@ struct ContextCache<'a, 's> {
 
 struct BasicModuleInfoCache<'a, 's> {
     cache: HashMap<u16, Option<BasicModuleInfo<'a, 's>>>,
-    modules: Vec<Module<'a>>,
+    modules: Rc<Vec<Module<'a>>>,
     module_info_provider: &'a dyn ModuleProvider<'s>,
 }
 
@@ -723,7 +752,9 @@ impl<'a, 's> BasicModuleInfoCache<'a, 's> {
             .entry(module_index)
             .or_insert_with(|| {
                 let module = modules.get(module_index as usize)?;
-                let module_info = module_info_provider.get_module_info(module).ok()??;
+                let module_info = module_info_provider
+                    .get_module_info(module_index, module)
+                    .ok()??;
                 BasicModuleInfo::try_from_module_info(module_info).ok()
             })
             .as_ref()
@@ -928,6 +959,7 @@ impl ExtendedProcedureInfo {
         proc: &ProcedureSymbolFunction,
         type_formatter: &TypeFormatter,
         public_functions: &[PublicSymbolFunction],
+        module_index: u16,
     ) -> Option<&str> {
         self.name
             .get_or_insert_with(|| {
@@ -948,7 +980,7 @@ impl ExtendedProcedureInfo {
                     }
                 }
                 type_formatter
-                    .format_function(&proc.name.to_string(), proc.type_index)
+                    .format_function(&proc.name.to_string(), module_index, proc.type_index)
                     .ok()
             })
             .as_deref()

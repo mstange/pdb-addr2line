@@ -1,4 +1,5 @@
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error("Formatting error: {0}")]
     FormatError(#[source] std::fmt::Error),
@@ -21,14 +22,35 @@ pub enum Error {
     #[error("Overlapping section contributions in section {0} from modules {1} and {2}")]
     OverlappingSectionContributions(u16, u16, u16),
 
-    #[error("Getting the procedure lines was unsuccessful.")]
+    #[error("Getting the procedure lines was unsuccessful")]
     ProcedureLinesUnsuccessful,
 
-    #[error("Getting the procedure inline ranges was unsuccessful.")]
+    #[error("Getting the procedure inline ranges was unsuccessful")]
     ProcedureInlineRangesUnsuccessful,
 
-    #[error("Getting the extended module info was unsuccessful.")]
+    #[error("Getting the extended module info was unsuccessful")]
     ExtendedModuleInfoUnsuccessful,
+
+    #[error("Could not resolve cross-module reference due to missing string table")]
+    CantResolveCrossModuleRefWithoutStringTable,
+
+    #[error("Getting the module imports was unsuccessful")]
+    ModuleImportsUnsuccessful,
+
+    #[error("Could not find the module with name {0}")]
+    ModuleNameNotFound(String),
+
+    #[error("Getting the module exports was unsuccessful")]
+    ModuleExportsUnsuccessful,
+
+    #[error("The local index {0} was not found in the module exports")]
+    LocalIndexNotInExports(u32),
+
+    #[error("The module index {0} was out-of-range.")]
+    OutOfRangeModuleIndex(u16),
+
+    #[error("Could not get the ModuleInfo for module index {0}")]
+    ModuleInfoNotFound(u16),
 }
 
 impl From<pdb::Error> for Error {

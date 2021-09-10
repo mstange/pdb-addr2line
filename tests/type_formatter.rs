@@ -1,7 +1,10 @@
-use std::{error::Error, path::{Path, PathBuf}};
+use std::{
+    error::Error,
+    path::{Path, PathBuf},
+};
 
 use pdb::IdIndex;
-use pdb_addr2line::{pdb, TypeFormatter};
+use pdb_addr2line::{pdb, ContextPdbData};
 
 /// Returns the full path to the specified fixture.
 fn fixture<P: AsRef<Path>>(path: P) -> PathBuf {
@@ -24,14 +27,25 @@ fn fixture<P: AsRef<Path>>(path: P) -> PathBuf {
 #[test]
 fn test() -> Result<(), Box<dyn Error>> {
     let file = std::fs::File::open(fixture("crash.pdb"))?;
-    let mut pdb = pdb::PDB::open(file)?;
-    let debug_info = pdb.debug_information()?;
-    let type_info = pdb.type_information()?;
-    let id_info = pdb.id_information()?;
-    let formatter = TypeFormatter::new(&debug_info, &type_info, &id_info, Default::default())?;
+    let data = ContextPdbData::try_from_pdb(pdb::PDB::open(file)?)?;
+    let formatter = data.make_type_formatter()?;
 
-    assert_eq!(formatter.format_id(IdIndex(0x12fe))?, "`anonymous namespace'::start()");
-    assert_eq!(formatter.format_id(IdIndex(0x12ff))?, "`anonymous namespace'::crash()");
+    assert_eq!(
+        formatter.format_id(0, IdIndex(0x12fe))?,
+        "`anonymous namespace'::start()"
+    );
+    assert_eq!(
+        formatter.format_id(0, IdIndex(0x12ff))?,
+        "`anonymous namespace'::crash()"
+    );
+    assert_eq!(
+        formatter.format_id(4, IdIndex(0x80000013))?,
+        "std::allocator<wchar_t>::deallocate(wchar_t* const, const unsigned int)"
+    );
+    assert_eq!(
+        formatter.format_id(4, IdIndex(0x80000007))?,
+        "std::_Adjust_manually_vector_aligned(void*&, unsigned int&)"
+    );
 
     Ok(())
 }
