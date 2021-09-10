@@ -11,6 +11,7 @@ name = "pdb-addr2line"
 readme = "Readme.md"
 repository = "https://github.com/mstange/pdb-addr2line"
 version = "0.6.0"
+exclude = ["/.github", "/tests"]
 
 [dependencies]
 bitflags = "1.0"
