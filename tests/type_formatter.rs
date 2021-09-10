@@ -30,8 +30,8 @@ fn test() -> Result<(), Box<dyn Error>> {
     let id_info = pdb.id_information()?;
     let formatter = TypeFormatter::new(&debug_info, &type_info, &id_info, Default::default())?;
 
-    assert_eq!(formatter.format_id(IdIndex(0x1310))?, "`anonymous namespace'::start()");
-    assert_eq!(formatter.format_id(IdIndex(0x1311))?, "`anonymous namespace'::crash()");
+    assert_eq!(formatter.format_id(IdIndex(0x12fe))?, "`anonymous namespace'::start()");
+    assert_eq!(formatter.format_id(IdIndex(0x12ff))?, "`anonymous namespace'::crash()");
 
     Ok(())
 }
