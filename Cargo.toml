@@ -24,7 +24,7 @@ elsa = "1.4.0"
 [dev-dependencies]
 clap = "2"
 getopts = "0.2.21"
-memmap2 = "0.3.1"
+memmap2 = "0.5.0"
 msvc-demangler = "0.9.0"
 
 [[example]]
