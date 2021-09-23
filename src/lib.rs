@@ -54,9 +54,9 @@ use elsa::FrozenMap;
 use maybe_owned::{MaybeOwned, MaybeOwnedMut};
 use pdb::{
     AddressMap, DebugInformation, FallibleIterator, FileIndex, IdIndex, IdInformation,
-    InlineSiteSymbol, Inlinee, LineProgram, Module, ModuleInfo, PdbInternalSectionOffset,
-    PublicSymbol, RawString, Rva, Source, StringTable, SymbolData, SymbolIndex, SymbolIter,
-    SymbolTable, TypeIndex, TypeInformation, PDB,
+    ImageSectionHeader, InlineSiteSymbol, Inlinee, LineProgram, Module, ModuleInfo,
+    PdbInternalSectionOffset, PublicSymbol, RawString, Rva, Source, StringTable, SymbolData,
+    SymbolIndex, SymbolIter, SymbolTable, TypeIndex, TypeInformation, PDB,
 };
 use range_collections::RangeSet;
 use std::cmp::Ordering;
@@ -180,9 +180,11 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
     ) -> Result<Context<'_, 's>> {
         let type_formatter = self.make_type_formatter_with_flags(flags)?;
         let modules = type_formatter.modules.clone();
+        let sections = self.pdb.borrow_mut().sections()?;
 
         Context::new_from_parts(
             self,
+            sections.as_deref().unwrap_or(&[]),
             &self.address_map,
             &self.global_symbols,
             self.string_table.as_ref(),
@@ -266,8 +268,10 @@ impl<'a, 's> Context<'a, 's> {
     /// However, if you interact with a PDB directly and parse some of its contents
     /// for other uses, you may want to call this method in order to avoid overhead
     /// from repeatedly parsing the same streams.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_from_parts(
         module_info_provider: &'a dyn ModuleProvider<'s>,
+        sections: &[ImageSectionHeader],
         address_map: &'a AddressMap<'s>,
         global_symbols: &'a SymbolTable<'s>,
         string_table: Option<&'a StringTable<'s>>,
@@ -281,16 +285,18 @@ impl<'a, 's> Context<'a, 's> {
         let mut symbol_iter = global_symbols.iter();
         while let Some(symbol) = symbol_iter.next()? {
             if let Ok(SymbolData::Public(PublicSymbol {
-                function: true,
+                function,
                 name,
                 offset,
                 ..
             })) = symbol.parse()
             {
-                public_functions.push(PublicSymbolFunction {
-                    start_offset: offset,
-                    name,
-                });
+                if function || is_executable_section(offset.section, sections) {
+                    public_functions.push(PublicSymbolFunction {
+                        start_offset: offset,
+                        name,
+                    });
+                }
             }
         }
         // Sort and de-duplicate, so that we can use binary search during lookup.
@@ -904,6 +910,16 @@ fn compute_section_contributions(
     }
 
     Ok(section_contributions)
+}
+
+fn is_executable_section(section_index: u16, sections: &[ImageSectionHeader]) -> bool {
+    let section = match sections.get(section_index as usize) {
+        Some(section) => section,
+        None => return false,
+    };
+
+    const IMAGE_SCN_MEM_EXECUTE: u32 = 0x20000000;
+    section.characteristics & IMAGE_SCN_MEM_EXECUTE != 0
 }
 
 /// Offset and name of a function from a public symbol.
