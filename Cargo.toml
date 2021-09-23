@@ -10,7 +10,7 @@ license = "MIT/Apache-2.0"
 name = "pdb-addr2line"
 readme = "Readme.md"
 repository = "https://github.com/mstange/pdb-addr2line"
-version = "0.6.1"
+version = "0.7.0"
 exclude = ["/.github", "/tests"]
 
 [dependencies]
