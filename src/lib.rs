@@ -284,12 +284,7 @@ impl<'a, 's> Context<'a, 's> {
         // Start with the public function symbols.
         let mut symbol_iter = global_symbols.iter();
         while let Some(symbol) = symbol_iter.next()? {
-            if let Ok(SymbolData::Public(PublicSymbol {
-                name,
-                offset,
-                ..
-            })) = symbol.parse()
-            {
+            if let Ok(SymbolData::Public(PublicSymbol { name, offset, .. })) = symbol.parse() {
                 if is_executable_section(offset.section, sections) {
                     public_functions.push(PublicSymbolFunction {
                         start_offset: offset,
@@ -305,7 +300,7 @@ impl<'a, 's> Context<'a, 's> {
         // Read the section contributions. This will let us find the right module
         // based on the PdbSectionInternalOffset that corresponds to the looked-up
         // address. This allows reading module info on demand.
-        let section_contributions = compute_section_contributions(debug_info)?;
+        let section_contributions = compute_section_contributions(debug_info, sections)?;
 
         Ok(Self {
             address_map,
@@ -839,10 +834,11 @@ pub struct ModuleSectionContribution {
 /// and this function returns an error if any interleaving is detected.
 fn compute_section_contributions(
     debug_info: &DebugInformation<'_>,
+    sections: &[ImageSectionHeader],
 ) -> Result<Vec<ModuleSectionContribution>> {
     let mut section_contribution_iter = debug_info
         .section_contributions()?
-        .filter(|sc| Ok(sc.size != 0));
+        .filter(|sc| Ok(sc.size != 0 && is_executable_section(sc.offset.section, sections)));
     let mut section_contributions = Vec::new();
 
     if let Some(first_sc) = section_contribution_iter.next()? {
