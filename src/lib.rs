@@ -841,13 +841,12 @@ pub struct ModuleSectionContribution {
 fn compute_section_contributions(
     debug_info: &DebugInformation<'_>,
 ) -> Result<Vec<ModuleSectionContribution>> {
-    let mut section_contribution_iter = debug_info.section_contributions()?;
+    let mut section_contribution_iter = debug_info
+        .section_contributions()?
+        .filter(|sc| Ok(sc.size != 0));
     let mut section_contributions = Vec::new();
 
-    while let Some(first_sc) = section_contribution_iter.next()? {
-        if first_sc.size == 0 {
-            continue;
-        }
+    if let Some(first_sc) = section_contribution_iter.next()? {
         let mut current_combined_sc = ModuleSectionContribution {
             section_index: first_sc.offset.section,
             start_offset: first_sc.offset.offset,
@@ -857,9 +856,6 @@ fn compute_section_contributions(
         // Assume that section contributions from the same section and module are
         // sorted and non-interleaved.
         while let Some(sc) = section_contribution_iter.next()? {
-            if sc.size == 0 {
-                continue;
-            }
             let section_index = sc.offset.section;
             let start_offset = sc.offset.offset;
             let end_offset = start_offset + sc.size;
