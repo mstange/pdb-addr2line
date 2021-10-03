@@ -792,6 +792,30 @@ impl<'a, 's> BasicModuleInfo<'a, 's> {
                         type_index: proc.type_index,
                     });
                 }
+                Ok(SymbolData::SeparatedCode(data)) => {
+                    if data.len == 0 {
+                        continue;
+                    }
+
+                    // SeparatedCode references another procedure with data.parent_offset.
+                    // Usually the SeparatedCode symbol comes right after the referenced symbol.
+                    // Take the name and type_index from the referenced procedure.
+                    let (name, type_index) = match functions.last() {
+                        Some(proc) if proc.offset == data.parent_offset => {
+                            (proc.name, proc.type_index)
+                        }
+                        _ => continue,
+                    };
+
+                    functions.push(ProcedureSymbolFunction {
+                        offset: data.offset,
+                        len: data.len as u32,
+                        name,
+                        symbol_index: symbol.index(),
+                        end_symbol_index: data.end,
+                        type_index,
+                    });
+                }
                 Ok(SymbolData::Thunk(thunk)) => {
                     if thunk.len == 0 {
                         continue;
