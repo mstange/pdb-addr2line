@@ -285,13 +285,12 @@ impl<'a, 's> Context<'a, 's> {
         let mut symbol_iter = global_symbols.iter();
         while let Some(symbol) = symbol_iter.next()? {
             if let Ok(SymbolData::Public(PublicSymbol {
-                function,
                 name,
                 offset,
                 ..
             })) = symbol.parse()
             {
-                if function || is_executable_section(offset.section, sections) {
+                if is_executable_section(offset.section, sections) {
                     public_functions.push(PublicSymbolFunction {
                         start_offset: offset,
                         name,
