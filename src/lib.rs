@@ -611,8 +611,8 @@ impl<'a, 's> Context<'a, 's> {
             }
         };
 
-        let module_index = self.section_contributions[sc_index].module_index;
-        let basic_module_info = module_cache.get_basic_module_info(module_index);
+        let sc = &self.section_contributions[sc_index];
+        let basic_module_info = module_cache.get_basic_module_info(sc.module_index);
 
         if let Some(BasicModuleInfo {
             procedures,
@@ -634,7 +634,7 @@ impl<'a, 's> Context<'a, 's> {
             }) {
                 // Found a procedure at the requested offset.
                 return Some(PublicOrProcedureSymbol::Procedure(
-                    module_index,
+                    sc.module_index,
                     module_info,
                     &procedures[procedure_index],
                 ));
@@ -662,6 +662,10 @@ impl<'a, 's> Context<'a, 's> {
                     && fun.start_offset.offset <= offset.offset)
         );
         if fun.start_offset.section != offset.section {
+            return None;
+        }
+        // Ignore symbols outside the section contribution.
+        if fun.start_offset.offset < sc.start_offset {
             return None;
         }
 
