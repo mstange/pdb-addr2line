@@ -908,14 +908,22 @@ fn compute_section_contributions(
     Ok(section_contributions)
 }
 
-fn is_executable_section(section_index: u16, sections: &[ImageSectionHeader]) -> bool {
-    let section = match sections.get(section_index as usize) {
-        Some(section) => section,
-        None => return false,
-    };
+/// section_index is a 1-based index from PdbInternalSectionOffset.
+fn get_section(section_index: u16, sections: &[ImageSectionHeader]) -> Option<&ImageSectionHeader> {
+    if section_index == 0 {
+        None
+    } else {
+        sections.get((section_index - 1) as usize)
+    }
+}
 
+/// section_index is a 1-based index from PdbInternalSectionOffset.
+fn is_executable_section(section_index: u16, sections: &[ImageSectionHeader]) -> bool {
     const IMAGE_SCN_MEM_EXECUTE: u32 = 0x20000000;
-    section.characteristics & IMAGE_SCN_MEM_EXECUTE != 0
+    match get_section(section_index, sections) {
+        Some(section) => section.characteristics & IMAGE_SCN_MEM_EXECUTE != 0,
+        None => false,
+    }
 }
 
 /// Offset and name of a function from a public symbol.
