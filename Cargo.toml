@@ -22,7 +22,7 @@ thiserror = "1.0"
 elsa = "1.4.0"
 
 [dev-dependencies]
-clap = "2"
+clap = "3.1.18"
 getopts = "0.2.21"
 memmap2 = "0.5.0"
 msvc-demangler = "0.9.0"

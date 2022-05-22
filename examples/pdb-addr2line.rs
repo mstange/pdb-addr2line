@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufRead, Lines, StdinLock, Write};
 use std::path::Path;
 
-use clap::{App, Arg, Values};
+use clap::{Arg, Command, Values};
 use msvc_demangler::DemangleFlags;
 use pdb_addr2line::pdb;
 
@@ -81,76 +81,56 @@ fn print_function(name: &str, demangle: bool) {
 }
 
 fn main() {
-    let matches = App::new("hardliner")
+    let matches = Command::new("pdb-addr2line")
         .version("0.1")
-        .about("A fast addr2line clone")
-        .arg(
-            Arg::with_name("exe")
-                .short("e")
+        .about("A fast addr2line port for PDBs")
+        .args(&[
+            Arg::new("exe")
+                .short('e')
                 .long("exe")
                 .value_name("filename")
                 .help(
                     "Specify the name of the executable for which addresses should be translated.",
                 )
                 .required(true),
-        )
-        .arg(
-            Arg::with_name("sup")
+            Arg::new("sup")
                 .long("sup")
                 .value_name("filename")
                 .help("Path to supplementary object file."),
-        )
-        .arg(
-            Arg::with_name("functions")
-                .short("f")
+            Arg::new("functions")
+                .short('f')
                 .long("functions")
                 .help("Display function names as well as file and line number information."),
-        )
-        .arg(
-            Arg::with_name("pretty")
-                .short("p")
-                .long("pretty-print")
-                .help(
-                    "Make the output more human friendly: each location are printed on \
+            Arg::new("pretty").short('p').long("pretty-print").help(
+                "Make the output more human friendly: each location are printed on \
                      one line.",
-                ),
-        )
-        .arg(Arg::with_name("inlines").short("i").long("inlines").help(
-            "If the address belongs to a function that was inlined, the source \
+            ),
+            Arg::new("inlines").short('i').long("inlines").help(
+                "If the address belongs to a function that was inlined, the source \
              information for all enclosing scopes back to the first non-inlined \
              function will also be printed.",
-        ))
-        .arg(
-            Arg::with_name("addresses")
-                .short("a")
-                .long("addresses")
-                .help(
-                    "Display the address before the function name, file and line \
+            ),
+            Arg::new("addresses").short('a').long("addresses").help(
+                "Display the address before the function name, file and line \
                      number information.",
-                ),
-        )
-        .arg(
-            Arg::with_name("basenames")
-                .short("s")
+            ),
+            Arg::new("basenames")
+                .short('s')
                 .long("basenames")
                 .help("Display only the base of each file name."),
-        )
-        .arg(Arg::with_name("demangle").short("C").long("demangle").help(
-            "Demangle function names. \
+            Arg::new("demangle").short('C').long("demangle").help(
+                "Demangle function names. \
              Specifying a specific demangling style (like GNU addr2line) \
              is not supported. (TODO)",
-        ))
-        .arg(
-            Arg::with_name("llvm")
+            ),
+            Arg::new("llvm")
                 .long("llvm")
                 .help("Display output in the same format as llvm-symbolizer."),
-        )
-        .arg(
-            Arg::with_name("addrs")
+            Arg::new("addrs")
                 .takes_value(true)
-                .multiple(true)
+                .multiple_occurrences(true)
                 .help("Addresses to use instead of reading from stdin."),
-        )
+        ])
         .get_matches();
 
     let do_functions = matches.is_present("functions");
