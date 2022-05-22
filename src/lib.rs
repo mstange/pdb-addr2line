@@ -406,7 +406,7 @@ impl<'a, 's> Context<'a, 's> {
         };
 
         match func {
-            PublicOrProcedureSymbol::Public(global_function_index) => {
+            PublicOrProcedureSymbol::Public(_, _, global_function_index) => {
                 let func = &self.global_functions[global_function_index];
                 let name = func.name.map(|name| name.to_string().to_string());
                 let start_rva = match func.start_offset.to_rva(self.address_map) {
@@ -482,87 +482,94 @@ impl<'a, 's> Context<'a, 's> {
             None => return Ok(None),
         };
 
-        let (module_index, module_info, proc) = match func {
-            PublicOrProcedureSymbol::Public(global_function_index) => {
+        // We can have a pretty wild mix of available information, depending on what's in
+        // the PDB file.
+        //  - Some PDBs have everything.
+        //  - Some PDBs only have public symbols and no modules at all, so no procedures
+        //    and no file / line info.
+        //  - Some PDBs have public symbols and modules, but the modules only have file /
+        //    line info and no procedures.
+        let (module_index, module_info, func_offset, func_size, func_name, proc_stuff) = match func
+        {
+            PublicOrProcedureSymbol::Public(module_index, module_info, global_function_index) => {
                 let func = &self.global_functions[global_function_index];
-                let function = func.name.map(|name| name.to_string().to_string());
-                let start_rva = match func.start_offset.to_rva(self.address_map) {
-                    Some(rva) => rva.0,
-                    None => return Ok(None),
-                };
-                // Get the end address from the address of the next entry in the global function list.
-                let end_rva = match self.global_functions.get(global_function_index + 1) {
+                let func_name = func.name.map(|name| name.to_string().to_string());
+                // Get the function size from the address of the next entry in the global function list.
+                let size = match self.global_functions.get(global_function_index + 1) {
                     Some(next_entry)
                         if next_entry.start_offset.section == func.start_offset.section =>
                     {
-                        match next_entry.start_offset.to_rva(self.address_map) {
-                            Some(rva) => Some(rva.0),
-                            None => return Ok(None),
-                        }
+                        Some(next_entry.start_offset.offset - func.start_offset.offset)
                     }
                     _ => None,
                 };
-                // This is a public symbol. We only have the function name and no file / line info,
-                // and no inline frames.
-                return Ok(Some(FunctionFrames {
-                    start_rva,
-                    end_rva,
-                    frames: vec![Frame {
-                        function,
-                        file: None,
-                        line: None,
-                    }],
-                }));
-            }
-            PublicOrProcedureSymbol::Procedure(module_index, module_info, proc) => {
-                (module_index, module_info, proc)
-            }
-        };
-
-        let proc_extended_info = procedure_cache.entry(proc.offset).or_default();
-        let function = proc_extended_info
-            .get_name(
-                proc,
-                &self.type_formatter,
-                &self.global_functions,
-                module_index,
-            )
-            .map(String::from);
-        let start_rva = match proc.offset.to_rva(self.address_map) {
-            Some(rva) => rva.0,
-            None => return Ok(None),
-        };
-        let end_rva = start_rva + proc.len;
-
-        let ExtendedModuleInfo {
-            line_program,
-            inlinees,
-        } = extended_module_cache
-            .entry(module_index)
-            .or_insert_with(|| self.compute_extended_module_info(module_info))
-            .as_mut()
-            .map_err(|err| mem::replace(err, Error::ExtendedModuleInfoUnsuccessful))?;
-
-        let function_line_info = function_line_cache.entry(proc.offset).or_default();
-        let lines = function_line_info.get_lines(proc.offset, line_program)?;
-        let search = match lines.binary_search_by_key(&offset.offset, |li| li.start_offset) {
-            Err(0) => None,
-            Ok(i) => Some(i),
-            Err(i) => Some(i - 1),
-        };
-        let (file, line) = match search {
-            Some(index) => {
-                let line_info = &lines[index];
                 (
-                    self.resolve_filename(line_program, line_info.file_index),
-                    Some(line_info.line_start),
+                    module_index,
+                    module_info,
+                    func.start_offset,
+                    size,
+                    func_name,
+                    None,
                 )
             }
-            None => (None, None),
+            PublicOrProcedureSymbol::Procedure(module_index, module_info, proc) => {
+                let proc_extended_info = procedure_cache.entry(proc.offset).or_default();
+                let func_name = proc_extended_info
+                    .get_name(
+                        proc,
+                        &self.type_formatter,
+                        &self.global_functions,
+                        module_index,
+                    )
+                    .map(String::from);
+                (
+                    module_index,
+                    Some(module_info),
+                    proc.offset,
+                    Some(proc.len),
+                    func_name,
+                    Some((proc, proc_extended_info)),
+                )
+            }
+        };
+
+        let extended_module_info = match module_info {
+            Some(module_info) => Some(
+                extended_module_cache
+                    .entry(module_index)
+                    .or_insert_with(|| self.compute_extended_module_info(module_info))
+                    .as_mut()
+                    .map_err(|err| mem::replace(err, Error::ExtendedModuleInfoUnsuccessful))?,
+            ),
+            None => None,
+        };
+
+        let (file, line) = if let Some(ExtendedModuleInfo { line_program, .. }) =
+            &extended_module_info
+        {
+            let function_line_info = function_line_cache.entry(func_offset).or_default();
+            let lines = function_line_info.get_lines(func_offset, line_program)?;
+            let search = match lines.binary_search_by_key(&offset.offset, |li| li.start_offset) {
+                Err(0) => None,
+                Ok(i) => Some(i),
+                Err(i) => Some(i - 1),
+            };
+            match search {
+                Some(index) => {
+                    let line_info = &lines[index];
+                    (
+                        self.resolve_filename(line_program, line_info.file_index),
+                        Some(line_info.line_start),
+                    )
+                }
+                None => (None, None),
+            }
+        } else {
+            (None, None)
         };
 
         let frame = Frame {
-            function,
+            function: func_name,
             file,
             line,
         };
@@ -570,62 +577,78 @@ impl<'a, 's> Context<'a, 's> {
         // Ordered outside to inside, until just before the end of this function.
         let mut frames = vec![frame];
 
-        let mut inline_ranges =
-            proc_extended_info.get_inline_ranges(module_info, proc, inlinees)?;
+        if let (Some((proc, proc_extended_info)), Some(extended_module_info)) =
+            (proc_stuff, extended_module_info)
+        {
+            let ExtendedModuleInfo {
+                inlinees,
+                line_program,
+                module_info,
+                ..
+            } = extended_module_info;
+            let mut inline_ranges =
+                proc_extended_info.get_inline_ranges(module_info, proc, inlinees)?;
 
-        loop {
-            let current_depth = (frames.len() - 1) as u16;
+            loop {
+                let current_depth = (frames.len() - 1) as u16;
 
-            // Look up (offset.offset, current_depth) in inline_ranges.
-            // `inlined_addresses` is sorted in "breadth-first traversal order", i.e.
-            // by `call_depth` first, and then by `start_offset`. See the comment at
-            // the sort call for more information about why.
-            let search = inline_ranges.binary_search_by(|range| {
-                if range.call_depth > current_depth {
-                    Ordering::Greater
-                } else if range.call_depth < current_depth {
-                    Ordering::Less
-                } else if range.start_offset > offset.offset {
-                    Ordering::Greater
-                } else if range.end_offset <= offset.offset {
-                    Ordering::Less
-                } else {
-                    Ordering::Equal
-                }
-            });
-            let (inline_range, remainder) = match search {
-                Ok(index) => (&inline_ranges[index], &inline_ranges[index + 1..]),
-                Err(_) => break,
-            };
+                // Look up (offset.offset, current_depth) in inline_ranges.
+                // `inlined_addresses` is sorted in "breadth-first traversal order", i.e.
+                // by `call_depth` first, and then by `start_offset`. See the comment at
+                // the sort call for more information about why.
+                let search = inline_ranges.binary_search_by(|range| {
+                    if range.call_depth > current_depth {
+                        Ordering::Greater
+                    } else if range.call_depth < current_depth {
+                        Ordering::Less
+                    } else if range.start_offset > offset.offset {
+                        Ordering::Greater
+                    } else if range.end_offset <= offset.offset {
+                        Ordering::Less
+                    } else {
+                        Ordering::Equal
+                    }
+                });
+                let (inline_range, remainder) = match search {
+                    Ok(index) => (&inline_ranges[index], &inline_ranges[index + 1..]),
+                    Err(_) => break,
+                };
 
-            let function = inline_name_cache
-                .entry(inline_range.inlinee)
-                .or_insert_with(|| {
-                    self.type_formatter
-                        .format_id(module_index, inline_range.inlinee)
-                })
-                .as_ref()
-                .ok()
-                .cloned();
-            let file = inline_range
-                .file_index
-                .and_then(|file_index| self.resolve_filename(line_program, file_index));
-            let line = inline_range.line_start;
-            frames.push(Frame {
-                function,
-                file,
-                line,
-            });
+                let function = inline_name_cache
+                    .entry(inline_range.inlinee)
+                    .or_insert_with(|| {
+                        self.type_formatter
+                            .format_id(module_index, inline_range.inlinee)
+                    })
+                    .as_ref()
+                    .ok()
+                    .cloned();
+                let file = inline_range
+                    .file_index
+                    .and_then(|file_index| self.resolve_filename(line_program, file_index));
+                let line = inline_range.line_start;
+                frames.push(Frame {
+                    function,
+                    file,
+                    line,
+                });
 
-            inline_ranges = remainder;
+                inline_ranges = remainder;
+            }
+
+            // Now order from inside to outside.
+            frames.reverse();
         }
 
-        // Now order from inside to outside.
-        frames.reverse();
+        let start_rva = match func_offset.to_rva(self.address_map) {
+            Some(rva) => rva.0,
+            None => return Ok(None),
+        };
+        let end_rva = func_size.and_then(|size| start_rva.checked_add(size));
 
         Ok(Some(FunctionFrames {
             start_rva,
-            end_rva: Some(end_rva),
+            end_rva,
             frames,
         }))
     }
@@ -681,7 +704,7 @@ impl<'a, 's> Context<'a, 's> {
         let sc = &self.section_contributions[sc_index];
         let basic_module_info = module_cache.get_basic_module_info(sc.module_index);
 
-        if let Some(BasicModuleInfo {
+        let module_info = if let Some(BasicModuleInfo {
             procedures,
             module_info,
         }) = basic_module_info
@@ -706,7 +729,10 @@ impl<'a, 's> Context<'a, 's> {
                     &procedures[procedure_index],
                 ));
             }
-        }
+            Some(*module_info)
+        } else {
+            None
+        };
 
         // No procedure was found at this offset in the module that the section
         // contribution pointed us at.
@@ -737,14 +763,16 @@ impl<'a, 's> Context<'a, 's> {
         }
 
         Some(PublicOrProcedureSymbol::Public(
+            sc.module_index,
+            module_info,
             last_global_function_starting_lte_address,
         ))
     }
 
     fn compute_extended_module_info(
         &self,
-        module_info: &'a ModuleInfo,
-    ) -> Result<ExtendedModuleInfo<'a>> {
+        module_info: &'a ModuleInfo<'s>,
+    ) -> Result<ExtendedModuleInfo<'a, 's>> {
         let line_program = module_info.line_program()?;
 
         let inlinees: BTreeMap<IdIndex, Inlinee> = module_info
@@ -753,6 +781,7 @@ impl<'a, 's> Context<'a, 's> {
             .collect()?;
 
         Ok(ExtendedModuleInfo {
+            module_info,
             inlinees,
             line_program,
         })
@@ -801,7 +830,7 @@ struct ContextCache<'a, 's> {
     module_cache: BasicModuleInfoCache<'a, 's>,
     function_line_cache: HashMap<PdbInternalSectionOffset, FunctionLineInfo>,
     procedure_cache: HashMap<PdbInternalSectionOffset, ExtendedProcedureInfo>,
-    extended_module_cache: BTreeMap<u16, Result<ExtendedModuleInfo<'a>>>,
+    extended_module_cache: BTreeMap<u16, Result<ExtendedModuleInfo<'a, 's>>>,
     inline_name_cache: BTreeMap<IdIndex, Result<String>>,
     full_rva_list: Option<Rc<Vec<u32>>>,
 }
@@ -1073,7 +1102,7 @@ struct ProcedureSymbolFunction<'a> {
 }
 
 enum PublicOrProcedureSymbol<'a, 's, 'm> {
-    Public(usize),
+    Public(u16, Option<&'a ModuleInfo<'s>>, usize),
     Procedure(u16, &'a ModuleInfo<'s>, &'m ProcedureSymbolFunction<'a>),
 }
 
@@ -1306,12 +1335,13 @@ fn process_inlinee_symbols(
     Ok(ranges)
 }
 
-struct ExtendedModuleInfo<'a> {
+struct ExtendedModuleInfo<'a, 's> {
+    module_info: &'a ModuleInfo<'s>,
     inlinees: BTreeMap<IdIndex, Inlinee<'a>>,
     line_program: LineProgram<'a>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct CachedLineInfo {
     pub start_offset: u32,
     pub file_index: FileIndex,
