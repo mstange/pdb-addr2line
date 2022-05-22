@@ -619,7 +619,7 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
 
     /// Check if ptr points to the specified class, and if so, whether it points to const or non-const class.
     /// If it points to a different class than the one supplied in the `class` argument, don'a check constness.
-    fn is_ptr_to_class(&mut self, ptr: TypeIndex, class: TypeIndex) -> Result<PtrToClassKind> {
+    fn check_ptr_class(&mut self, ptr: TypeIndex, class: TypeIndex) -> Result<PtrToClassKind> {
         if let TypeData::Pointer(ptr_type) = self.parse_type_index(ptr)? {
             let underlying_type = ptr_type.underlying_type;
             if underlying_type == class {
@@ -643,7 +643,7 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
         this: TypeIndex,
         class: TypeIndex,
     ) -> Result<(bool, Option<TypeIndex>)> {
-        match self.is_ptr_to_class(this, class)? {
+        match self.check_ptr_class(this, class)? {
             PtrToClassKind::PtrToGivenClass { constant } => {
                 // The this type looks normal. Don'a return an extra argument.
                 Ok((constant, None))
