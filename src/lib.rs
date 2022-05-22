@@ -259,7 +259,11 @@ pub struct Context<'a, 's> {
     section_contributions: Vec<ModuleSectionContribution>,
     string_table: Option<&'a StringTable<'s>>,
     type_formatter: MaybeOwned<'a, TypeFormatter<'a, 's>>,
-    public_functions: Vec<PublicSymbolFunction<'a>>,
+    /// Contains an entry for hopefully every function in an executable section.
+    /// The entries come from the public function symbols, and from the section
+    /// contributions: We create an unnamed "placeholder" entry for each section
+    /// contribution.
+    global_functions: Vec<PublicSymbolFunctionOrPlaceholder<'a>>,
     cache: RefCell<ContextCache<'a, 's>>,
 }
 
@@ -281,7 +285,7 @@ impl<'a, 's> Context<'a, 's> {
         type_formatter: MaybeOwned<'a, TypeFormatter<'a, 's>>,
         modules: Rc<Vec<Module<'a>>>,
     ) -> Result<Self> {
-        let mut public_functions = Vec::new();
+        let mut global_functions = Vec::new();
 
         // Start with the public function symbols.
         let mut symbol_iter = global_symbols.iter();
@@ -289,29 +293,59 @@ impl<'a, 's> Context<'a, 's> {
             if let S_PUB32 | S_PUB32_ST = symbol.raw_kind() {
                 if let Ok(SymbolData::Public(PublicSymbol { name, offset, .. })) = symbol.parse() {
                     if is_executable_section(offset.section, sections) {
-                        public_functions.push(PublicSymbolFunction {
+                        global_functions.push(PublicSymbolFunctionOrPlaceholder {
                             start_offset: offset,
-                            name,
+                            name: Some(name),
                         });
                     }
                 }
             }
         }
-        // Sort and de-duplicate, so that we can use binary search during lookup.
-        public_functions.sort_unstable_by_key(|p| (p.start_offset.section, p.start_offset.offset));
-        public_functions.dedup_by_key(|p| p.start_offset);
 
         // Read the section contributions. This will let us find the right module
         // based on the PdbSectionInternalOffset that corresponds to the looked-up
         // address. This allows reading module info on demand.
-        let section_contributions = compute_section_contributions(debug_info, sections)?;
+        // The section contributions also give us more function start addresses. We
+        // create placeholder symbols for them so we don't account missing functions to
+        // the nearest public function, and so that we can find line information for
+        // those missing functions if present.
+        let section_contributions =
+            compute_section_contributions(debug_info, sections, &mut global_functions)?;
+
+        // Add a few more placeholder entries for the end addresses of executable sections.
+        // These act as terminator addresses for the last function in a section.
+        for (section_index_zero_based, section) in sections.iter().enumerate() {
+            let section_index = (section_index_zero_based + 1) as u16;
+            if !is_executable_section(section_index, sections) {
+                continue;
+            }
+            let size = section.physical_address; // this field has the wrong name (pdb #121)
+            let section_end_offset = PdbInternalSectionOffset::new(section_index, size);
+            global_functions.push(PublicSymbolFunctionOrPlaceholder {
+                start_offset: section_end_offset,
+                name: None,
+            });
+        }
+
+        // Sort and de-duplicate, so that we can use binary search during lookup.
+        // If we have both a public symbol and a placeholder symbol at the same offset,
+        // make it so that the symbol with name comes first, so that we keep it during
+        // the deduplication.
+        global_functions.sort_unstable_by_key(|p| {
+            (
+                p.start_offset.section,
+                p.start_offset.offset,
+                p.name.is_none(),
+            )
+        });
+        global_functions.dedup_by_key(|p| p.start_offset);
 
         Ok(Self {
             address_map,
             section_contributions,
             string_table,
             type_formatter,
-            public_functions,
+            global_functions,
             cache: RefCell::new(ContextCache {
                 module_cache: BasicModuleInfoCache {
                     cache: Default::default(),
@@ -328,7 +362,7 @@ impl<'a, 's> Context<'a, 's> {
 
     /// The number of functions found in public symbols.
     pub fn function_count(&self) -> usize {
-        self.public_functions.len()
+        self.global_functions.len()
     }
 
     /// Iterate over all functions in the modules.
@@ -371,8 +405,9 @@ impl<'a, 's> Context<'a, 's> {
         };
 
         match func {
-            PublicOrProcedureSymbol::Public(func) => {
-                let name = Some(func.name.to_string().to_string());
+            PublicOrProcedureSymbol::Public(global_function_index) => {
+                let func = &self.global_functions[global_function_index];
+                let name = func.name.map(|name| name.to_string().to_string());
                 let start_rva = match func.start_offset.to_rva(self.address_map) {
                     Some(rva) => rva.0,
                     None => return Ok(None),
@@ -389,7 +424,7 @@ impl<'a, 's> Context<'a, 's> {
                     .get_name(
                         func,
                         &self.type_formatter,
-                        &self.public_functions,
+                        &self.global_functions,
                         module_index,
                     )
                     .map(String::from);
@@ -434,8 +469,9 @@ impl<'a, 's> Context<'a, 's> {
         };
 
         let (module_index, module_info, proc) = match func {
-            PublicOrProcedureSymbol::Public(func) => {
-                let function = Some(func.name.to_string().to_string());
+            PublicOrProcedureSymbol::Public(global_function_index) => {
+                let func = &self.global_functions[global_function_index];
+                let function = func.name.map(|name| name.to_string().to_string());
                 let start_rva = match func.start_offset.to_rva(self.address_map) {
                     Some(rva) => rva.0,
                     None => return Ok(None),
@@ -462,7 +498,7 @@ impl<'a, 's> Context<'a, 's> {
             .get_name(
                 proc,
                 &self.type_formatter,
-                &self.public_functions,
+                &self.global_functions,
                 module_index,
             )
             .map(String::from);
@@ -569,7 +605,7 @@ impl<'a, 's> Context<'a, 's> {
 
     fn compute_full_rva_list(&self, module_cache: &mut BasicModuleInfoCache<'a, 's>) -> Vec<u32> {
         let mut list = Vec::new();
-        for func in &self.public_functions {
+        for func in &self.global_functions {
             if let Some(rva) = func.start_offset.to_rva(self.address_map) {
                 list.push(rva.0);
             }
@@ -594,7 +630,7 @@ impl<'a, 's> Context<'a, 's> {
         &self,
         offset: PdbInternalSectionOffset,
         module_cache: &'m mut BasicModuleInfoCache<'a, 's>,
-    ) -> Option<PublicOrProcedureSymbol<'_, 'a, 's, 'm>> {
+    ) -> Option<PublicOrProcedureSymbol<'a, 's, 'm>> {
         let sc_index = match self.section_contributions.binary_search_by(|sc| {
             if sc.section_index < offset.section {
                 Ordering::Less
@@ -650,8 +686,8 @@ impl<'a, 's> Context<'a, 's> {
         // This is not uncommon.
         // Fall back to the public symbols.
 
-        let last_public_function_starting_lte_address = match self
-            .public_functions
+        let last_global_function_starting_lte_address = match self
+            .global_functions
             .binary_search_by_key(&(offset.section, offset.offset), |p| {
                 (p.start_offset.section, p.start_offset.offset)
             }) {
@@ -659,7 +695,7 @@ impl<'a, 's> Context<'a, 's> {
             Ok(i) => i,
             Err(i) => i - 1,
         };
-        let fun = &self.public_functions[last_public_function_starting_lte_address];
+        let fun = &self.global_functions[last_global_function_starting_lte_address];
         debug_assert!(
             fun.start_offset.section < offset.section
                 || (fun.start_offset.section == offset.section
@@ -673,7 +709,9 @@ impl<'a, 's> Context<'a, 's> {
             return None;
         }
 
-        Some(PublicOrProcedureSymbol::Public(fun))
+        Some(PublicOrProcedureSymbol::Public(
+            last_global_function_starting_lte_address,
+        ))
     }
 
     fn compute_extended_module_info(
@@ -872,6 +910,7 @@ pub struct ModuleSectionContribution {
 fn compute_section_contributions(
     debug_info: &DebugInformation<'_>,
     sections: &[ImageSectionHeader],
+    placeholder_functions: &mut Vec<PublicSymbolFunctionOrPlaceholder>,
 ) -> Result<Vec<ModuleSectionContribution>> {
     let mut section_contribution_iter = debug_info
         .section_contributions()?
@@ -885,6 +924,8 @@ fn compute_section_contributions(
             end_offset: first_sc.offset.offset + first_sc.size,
             module_index: first_sc.module,
         };
+        let mut is_executable = is_executable_section(first_sc.offset.section, sections);
+
         // Assume that section contributions from the same section and module are
         // sorted and non-interleaved.
         while let Some(sc) = section_contribution_iter.next()? {
@@ -914,6 +955,14 @@ fn compute_section_contributions(
                     end_offset,
                     module_index: sc.module,
                 };
+                is_executable = is_executable_section(sc.offset.section, sections);
+            }
+
+            if is_executable {
+                placeholder_functions.push(PublicSymbolFunctionOrPlaceholder {
+                    start_offset: sc.offset,
+                    name: None,
+                });
             }
         }
         section_contributions.push(current_combined_sc);
@@ -958,16 +1007,18 @@ fn is_executable_section(section_index: u16, sections: &[ImageSectionHeader]) ->
     }
 }
 
-/// Offset and name of a function from a public symbol.
+/// Offset and name of a function from a public symbol, or from a placeholder symbol from
+/// the section contributions.
 #[derive(Clone, Debug)]
-struct PublicSymbolFunction<'s> {
+struct PublicSymbolFunctionOrPlaceholder<'s> {
     /// The address at which this function starts, as a section internal offset. The end
     /// address for global function symbols is not known. During symbol lookup, if the address
-    /// is not covered by a procedure symbol (for those, the  end addresses are known), then
+    /// is not covered by a procedure symbol (for those, the end addresses are known), then
     /// we assume that functions with no end address cover the range up to the next function.
     start_offset: PdbInternalSectionOffset,
-    /// The symbol name. This is the mangled ("decorated") function signature.
-    name: RawString<'s>,
+    /// The symbol name of the public symbol. This is the mangled ("decorated") function signature.
+    /// None if this is a placeholder.
+    name: Option<RawString<'s>>,
 }
 
 #[derive(Clone, Debug)]
@@ -993,8 +1044,8 @@ struct ProcedureSymbolFunction<'a> {
     type_index: TypeIndex,
 }
 
-enum PublicOrProcedureSymbol<'c, 'a, 's, 'm> {
-    Public(&'c PublicSymbolFunction<'a>),
+enum PublicOrProcedureSymbol<'a, 's, 'm> {
+    Public(usize),
     Procedure(u16, &'a ModuleInfo<'s>, &'m ProcedureSymbolFunction<'a>),
 }
 
@@ -1010,7 +1061,7 @@ impl ExtendedProcedureInfo {
         &mut self,
         proc: &ProcedureSymbolFunction,
         type_formatter: &TypeFormatter,
-        public_functions: &[PublicSymbolFunction],
+        global_functions: &[PublicSymbolFunctionOrPlaceholder],
         module_index: u16,
     ) -> Option<&str> {
         self.name
@@ -1020,14 +1071,15 @@ impl ExtendedProcedureInfo {
                     // If we have a public symbol at this address which is a decorated name
                     // (starts with a '?'), prefer to use that because it'll usually include
                     // the arguments.
-                    if let Ok(public_fun_index) = public_functions
+                    if let Ok(public_fun_index) = global_functions
                         .binary_search_by_key(&(proc.offset.section, proc.offset.offset), |f| {
                             (f.start_offset.section, f.start_offset.offset)
                         })
                     {
-                        let name = public_functions[public_fun_index].name;
-                        if name.as_bytes().starts_with(&[b'?']) {
-                            return Some(name.to_string().to_string());
+                        if let Some(name) = global_functions[public_fun_index].name {
+                            if name.as_bytes().starts_with(&[b'?']) {
+                                return Some(name.to_string().to_string());
+                            }
                         }
                     }
                 }
