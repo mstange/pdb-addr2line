@@ -412,9 +412,21 @@ impl<'a, 's> Context<'a, 's> {
                     Some(rva) => rva.0,
                     None => return Ok(None),
                 };
+                // Get the end address from the address of the next entry in the global function list.
+                let end_rva = match self.global_functions.get(global_function_index + 1) {
+                    Some(next_entry)
+                        if next_entry.start_offset.section == func.start_offset.section =>
+                    {
+                        match next_entry.start_offset.to_rva(self.address_map) {
+                            Some(rva) => Some(rva.0),
+                            None => return Ok(None),
+                        }
+                    }
+                    _ => None,
+                };
                 Ok(Some(Function {
                     start_rva,
-                    end_rva: None,
+                    end_rva,
                     name,
                 }))
             }
@@ -476,11 +488,23 @@ impl<'a, 's> Context<'a, 's> {
                     Some(rva) => rva.0,
                     None => return Ok(None),
                 };
+                // Get the end address from the address of the next entry in the global function list.
+                let end_rva = match self.global_functions.get(global_function_index + 1) {
+                    Some(next_entry)
+                        if next_entry.start_offset.section == func.start_offset.section =>
+                    {
+                        match next_entry.start_offset.to_rva(self.address_map) {
+                            Some(rva) => Some(rva.0),
+                            None => return Ok(None),
+                        }
+                    }
+                    _ => None,
+                };
                 // This is a public symbol. We only have the function name and no file / line info,
                 // and no inline frames.
                 return Ok(Some(FunctionFrames {
                     start_rva,
-                    end_rva: None,
+                    end_rva,
                     frames: vec![Frame {
                         function,
                         file: None,
