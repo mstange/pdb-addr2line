@@ -60,7 +60,7 @@ use pdb::{
     PdbInternalSectionOffset, PublicSymbol, RawString, Rva, Source, StringTable, SymbolData,
     SymbolIndex, SymbolIter, SymbolTable, TypeIndex, TypeInformation, PDB,
 };
-use range_collections::RangeSet;
+use range_collections::{AbstractRangeSet, RangeSet, RangeSet2};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::mem;
@@ -1253,8 +1253,8 @@ fn process_inlinee_symbols(
     site: InlineSiteSymbol,
     call_depth: u16,
     lines: &mut Vec<InlineRange>,
-) -> Result<RangeSet<u32>> {
-    let mut ranges = RangeSet::empty();
+) -> Result<RangeSet2<u32>> {
+    let mut ranges = RangeSet2::empty();
     let mut file_index = None;
     if let Some(inlinee) = inlinees.get(&site.inlinee) {
         let mut iter = inlinee.lines(proc_offset, &site);
@@ -1282,7 +1282,7 @@ fn process_inlinee_symbols(
         }
     }
 
-    let mut callee_ranges = RangeSet::empty();
+    let mut callee_ranges = RangeSet2::empty();
     while let Some(symbol) = symbols_iter.next()? {
         if symbol.index() >= site.end {
             break;
@@ -1312,7 +1312,7 @@ fn process_inlinee_symbols(
 
     if !ranges.is_superset(&callee_ranges) {
         // Workaround bad debug info.
-        let missing_ranges: RangeSet<u32> = &callee_ranges - &ranges;
+        let missing_ranges: RangeSet2<u32> = &callee_ranges - &ranges;
         for range in missing_ranges.iter() {
             let (start_offset, end_offset) = match range {
                 (Bound::Included(s), Bound::Excluded(e)) => (*s, *e),

@@ -8,7 +8,7 @@ use pdb::{
     ProcedureType, RawString, StringTable, TypeData, TypeIndex, TypeInformation, UnionType,
     Variant,
 };
-use range_collections::RangeSet;
+use range_collections::{RangeSet, RangeSet2};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -1163,7 +1163,7 @@ struct TypeSizeCache<'a> {
     /// printing array types. They are also needed for the public get_type_size method.
     forward_ref_sizes: HashMap<RawString<'a>, u32>,
 
-    cached_ranges: RangeSet<u32>,
+    cached_ranges: RangeSet2<u32>,
 }
 
 impl<'a> TypeSizeCache<'a> {
