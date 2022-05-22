@@ -44,12 +44,14 @@
 pub use maybe_owned;
 pub use pdb;
 
+mod constants;
 mod error;
 mod type_formatter;
 
 pub use error::Error;
 pub use type_formatter::*;
 
+use constants::*;
 use elsa::FrozenMap;
 use maybe_owned::{MaybeOwned, MaybeOwnedMut};
 use pdb::{
@@ -284,12 +286,14 @@ impl<'a, 's> Context<'a, 's> {
         // Start with the public function symbols.
         let mut symbol_iter = global_symbols.iter();
         while let Some(symbol) = symbol_iter.next()? {
-            if let Ok(SymbolData::Public(PublicSymbol { name, offset, .. })) = symbol.parse() {
-                if is_executable_section(offset.section, sections) {
-                    public_functions.push(PublicSymbolFunction {
-                        start_offset: offset,
-                        name,
-                    });
+            if let S_PUB32 | S_PUB32_ST = symbol.raw_kind() {
+                if let Ok(SymbolData::Public(PublicSymbol { name, offset, .. })) = symbol.parse() {
+                    if is_executable_section(offset.section, sections) {
+                        public_functions.push(PublicSymbolFunction {
+                            start_offset: offset,
+                            name,
+                        });
+                    }
                 }
             }
         }
@@ -777,62 +781,67 @@ impl<'a, 's> BasicModuleInfo<'a, 's> {
         let mut symbols_iter = module_info.symbols()?;
         let mut functions = Vec::new();
         while let Some(symbol) = symbols_iter.next()? {
-            match symbol.parse() {
-                Ok(SymbolData::Procedure(proc)) => {
-                    if proc.len == 0 {
-                        continue;
-                    }
-
-                    functions.push(ProcedureSymbolFunction {
-                        offset: proc.offset,
-                        len: proc.len,
-                        name: proc.name,
-                        symbol_index: symbol.index(),
-                        end_symbol_index: proc.end,
-                        type_index: proc.type_index,
-                    });
-                }
-                Ok(SymbolData::SeparatedCode(data)) => {
-                    if data.len == 0 {
-                        continue;
-                    }
-
-                    // SeparatedCode references another procedure with data.parent_offset.
-                    // Usually the SeparatedCode symbol comes right after the referenced symbol.
-                    // Take the name and type_index from the referenced procedure.
-                    let (name, type_index) = match functions.last() {
-                        Some(proc) if proc.offset == data.parent_offset => {
-                            (proc.name, proc.type_index)
+            if let S_LPROC32 | S_LPROC32_ST | S_GPROC32 | S_GPROC32_ST | S_LPROC32_ID
+            | S_GPROC32_ID | S_LPROC32_DPC | S_LPROC32_DPC_ID | S_THUNK32 | S_THUNK32_ST
+            | S_SEPCODE = symbol.raw_kind()
+            {
+                match symbol.parse() {
+                    Ok(SymbolData::Procedure(proc)) => {
+                        if proc.len == 0 {
+                            continue;
                         }
-                        _ => continue,
-                    };
 
-                    functions.push(ProcedureSymbolFunction {
-                        offset: data.offset,
-                        len: data.len as u32,
-                        name,
-                        symbol_index: symbol.index(),
-                        end_symbol_index: data.end,
-                        type_index,
-                    });
-                }
-                Ok(SymbolData::Thunk(thunk)) => {
-                    if thunk.len == 0 {
-                        continue;
+                        functions.push(ProcedureSymbolFunction {
+                            offset: proc.offset,
+                            len: proc.len,
+                            name: proc.name,
+                            symbol_index: symbol.index(),
+                            end_symbol_index: proc.end,
+                            type_index: proc.type_index,
+                        });
                     }
+                    Ok(SymbolData::SeparatedCode(data)) => {
+                        if data.len == 0 {
+                            continue;
+                        }
 
-                    // Treat thunks as procedures. This isn't perfectly accurate but it
-                    // doesn't cause any harm.
-                    functions.push(ProcedureSymbolFunction {
-                        offset: thunk.offset,
-                        len: thunk.len as u32,
-                        name: thunk.name,
-                        symbol_index: symbol.index(),
-                        end_symbol_index: thunk.end,
-                        type_index: TypeIndex(0),
-                    });
+                        // SeparatedCode references another procedure with data.parent_offset.
+                        // Usually the SeparatedCode symbol comes right after the referenced symbol.
+                        // Take the name and type_index from the referenced procedure.
+                        let (name, type_index) = match functions.last() {
+                            Some(proc) if proc.offset == data.parent_offset => {
+                                (proc.name, proc.type_index)
+                            }
+                            _ => continue,
+                        };
+
+                        functions.push(ProcedureSymbolFunction {
+                            offset: data.offset,
+                            len: data.len as u32,
+                            name,
+                            symbol_index: symbol.index(),
+                            end_symbol_index: data.end,
+                            type_index,
+                        });
+                    }
+                    Ok(SymbolData::Thunk(thunk)) => {
+                        if thunk.len == 0 {
+                            continue;
+                        }
+
+                        // Treat thunks as procedures. This isn't perfectly accurate but it
+                        // doesn't cause any harm.
+                        functions.push(ProcedureSymbolFunction {
+                            offset: thunk.offset,
+                            len: thunk.len as u32,
+                            name: thunk.name,
+                            symbol_index: symbol.index(),
+                            end_symbol_index: thunk.end,
+                            type_index: TypeIndex(0),
+                        });
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         // Sort and de-duplicate, so that we can use binary search during lookup.
@@ -1082,22 +1091,26 @@ fn compute_procedure_inline_ranges(
         if symbol.index() >= proc.end_symbol_index {
             break;
         }
-        match symbol.parse() {
-            Ok(SymbolData::Procedure(p)) => {
-                // This is a nested procedure. Skip it.
-                symbols_iter.skip_to(p.end)?;
+        if let S_LPROC32 | S_LPROC32_ST | S_GPROC32 | S_GPROC32_ST | S_LPROC32_ID | S_GPROC32_ID
+        | S_LPROC32_DPC | S_LPROC32_DPC_ID | S_INLINESITE | S_INLINESITE2 = symbol.raw_kind()
+        {
+            match symbol.parse() {
+                Ok(SymbolData::Procedure(p)) => {
+                    // This is a nested procedure. Skip it.
+                    symbols_iter.skip_to(p.end)?;
+                }
+                Ok(SymbolData::InlineSite(site)) => {
+                    process_inlinee_symbols(
+                        &mut symbols_iter,
+                        inlinees,
+                        proc.offset,
+                        site,
+                        0,
+                        &mut lines,
+                    )?;
+                }
+                _ => {}
             }
-            Ok(SymbolData::InlineSite(site)) => {
-                process_inlinee_symbols(
-                    &mut symbols_iter,
-                    inlinees,
-                    proc.offset,
-                    site,
-                    0,
-                    &mut lines,
-                )?;
-            }
-            _ => {}
         }
     }
 
@@ -1159,22 +1172,26 @@ fn process_inlinee_symbols(
         if symbol.index() >= site.end {
             break;
         }
-        match symbol.parse() {
-            Ok(SymbolData::Procedure(p)) => {
-                // This is a nested procedure. Skip it.
-                symbols_iter.skip_to(p.end)?;
+        if let S_LPROC32 | S_LPROC32_ST | S_GPROC32 | S_GPROC32_ST | S_LPROC32_ID | S_GPROC32_ID
+        | S_LPROC32_DPC | S_LPROC32_DPC_ID | S_INLINESITE | S_INLINESITE2 = symbol.raw_kind()
+        {
+            match symbol.parse() {
+                Ok(SymbolData::Procedure(p)) => {
+                    // This is a nested procedure. Skip it.
+                    symbols_iter.skip_to(p.end)?;
+                }
+                Ok(SymbolData::InlineSite(site)) => {
+                    callee_ranges |= process_inlinee_symbols(
+                        symbols_iter,
+                        inlinees,
+                        proc_offset,
+                        site,
+                        call_depth + 1,
+                        lines,
+                    )?;
+                }
+                _ => {}
             }
-            Ok(SymbolData::InlineSite(site)) => {
-                callee_ranges |= process_inlinee_symbols(
-                    symbols_iter,
-                    inlinees,
-                    proc_offset,
-                    site,
-                    call_depth + 1,
-                    lines,
-                )?;
-            }
-            _ => {}
         }
     }
 
