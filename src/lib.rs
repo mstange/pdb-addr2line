@@ -352,6 +352,7 @@ impl<'a, 's> Context<'a, 's> {
                     modules,
                     module_info_provider,
                 },
+                function_line_cache: Default::default(),
                 procedure_cache: Default::default(),
                 extended_module_cache: Default::default(),
                 inline_name_cache: Default::default(),
@@ -470,6 +471,7 @@ impl<'a, 's> Context<'a, 's> {
         let ContextCache {
             module_cache,
             procedure_cache,
+            function_line_cache,
             extended_module_cache,
             inline_name_cache,
             ..
@@ -541,7 +543,8 @@ impl<'a, 's> Context<'a, 's> {
             .as_mut()
             .map_err(|err| mem::replace(err, Error::ExtendedModuleInfoUnsuccessful))?;
 
-        let lines = proc_extended_info.get_lines(proc, line_program)?;
+        let function_line_info = function_line_cache.entry(proc.offset).or_default();
+        let lines = function_line_info.get_lines(proc.offset, line_program)?;
         let search = match lines.binary_search_by_key(&offset.offset, |li| li.start_offset) {
             Err(0) => None,
             Ok(i) => Some(i),
@@ -796,6 +799,7 @@ impl<'c, 'a, 's> Iterator for FunctionIter<'c, 'a, 's> {
 
 struct ContextCache<'a, 's> {
     module_cache: BasicModuleInfoCache<'a, 's>,
+    function_line_cache: HashMap<PdbInternalSectionOffset, FunctionLineInfo>,
     procedure_cache: HashMap<PdbInternalSectionOffset, ExtendedProcedureInfo>,
     extended_module_cache: BTreeMap<u16, Result<ExtendedModuleInfo<'a>>>,
     inline_name_cache: BTreeMap<IdIndex, Result<String>>,
@@ -1074,9 +1078,41 @@ enum PublicOrProcedureSymbol<'a, 's, 'm> {
 }
 
 #[derive(Default)]
+struct FunctionLineInfo {
+    lines: Option<Result<Vec<CachedLineInfo>>>,
+}
+
+impl FunctionLineInfo {
+    fn get_lines(
+        &mut self,
+        function_offset: PdbInternalSectionOffset,
+        line_program: &LineProgram,
+    ) -> Result<&[CachedLineInfo]> {
+        let lines = self
+            .lines
+            .get_or_insert_with(|| {
+                let mut iterator = line_program.lines_at_offset(function_offset);
+                let mut lines = Vec::new();
+                let mut next_item = iterator.next()?;
+                while let Some(line_info) = next_item {
+                    next_item = iterator.next()?;
+                    lines.push(CachedLineInfo {
+                        start_offset: line_info.offset.offset,
+                        file_index: line_info.file_index,
+                        line_start: line_info.line_start,
+                    });
+                }
+                Ok(lines)
+            })
+            .as_mut()
+            .map_err(|e| mem::replace(e, Error::ProcedureLinesUnsuccessful))?;
+        Ok(lines)
+    }
+}
+
+#[derive(Default)]
 struct ExtendedProcedureInfo {
     name: Option<Option<String>>,
-    lines: Option<Result<Vec<CachedLineInfo>>>,
     inline_ranges: Option<Result<Vec<InlineRange>>>,
 }
 
@@ -1112,32 +1148,6 @@ impl ExtendedProcedureInfo {
                     .ok()
             })
             .as_deref()
-    }
-
-    fn get_lines(
-        &mut self,
-        proc: &ProcedureSymbolFunction,
-        line_program: &LineProgram,
-    ) -> Result<&[CachedLineInfo]> {
-        let lines = self
-            .lines
-            .get_or_insert_with(|| {
-                let mut iterator = line_program.lines_at_offset(proc.offset);
-                let mut lines = Vec::new();
-                let mut next_item = iterator.next()?;
-                while let Some(line_info) = next_item {
-                    next_item = iterator.next()?;
-                    lines.push(CachedLineInfo {
-                        start_offset: line_info.offset.offset,
-                        file_index: line_info.file_index,
-                        line_start: line_info.line_start,
-                    });
-                }
-                Ok(lines)
-            })
-            .as_mut()
-            .map_err(|e| mem::replace(e, Error::ProcedureLinesUnsuccessful))?;
-        Ok(lines)
     }
 
     fn get_inline_ranges(
