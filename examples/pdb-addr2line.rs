@@ -192,32 +192,33 @@ fn main() {
 
         if do_functions || do_inlines {
             let mut printed_anything = false;
-            let frames = ctx.find_frames(probe).unwrap().unwrap();
-            for (i, frame) in frames.frames.iter().enumerate() {
-                if pretty && i != 0 {
-                    print!(" (inlined by) ");
-                }
-
-                if do_functions {
-                    if let Some(func) = &frame.function {
-                        print_function(func, demangle);
-                    } else {
-                        print!("??");
+            if let Some(frames) = ctx.find_frames(probe).unwrap() {
+                for (i, frame) in frames.frames.iter().enumerate() {
+                    if pretty && i != 0 {
+                        print!(" (inlined by) ");
                     }
 
-                    if pretty {
-                        print!(" at ");
-                    } else {
-                        println!();
+                    if do_functions {
+                        if let Some(func) = &frame.function {
+                            print_function(func, demangle);
+                        } else {
+                            print!("??");
+                        }
+
+                        if pretty {
+                            print!(" at ");
+                        } else {
+                            println!();
+                        }
                     }
-                }
 
-                print_loc(&frame.file, frame.line, basenames, llvm);
+                    print_loc(&frame.file, frame.line, basenames, llvm);
 
-                printed_anything = true;
+                    printed_anything = true;
 
-                if !do_inlines {
-                    break;
+                    if !do_inlines {
+                        break;
+                    }
                 }
             }
 
