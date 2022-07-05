@@ -95,7 +95,7 @@ pub struct ContextPdbData<'p, 's, S: Source<'s> + 's> {
     /// ModuleInfo objects are stored on this object (outside Context) so that the
     /// Context can internally store objects which have a lifetime dependency on
     /// ModuleInfo, such as Inlinees, LinePrograms, and RawStrings from modules.
-    module_infos: FrozenMap<u16, Box<ModuleInfo<'s>>>,
+    module_infos: FrozenMap<usize, Box<ModuleInfo<'s>>>,
 
     address_map: AddressMap<'s>,
     string_table: Option<StringTable<'s>>,
@@ -200,7 +200,7 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
 impl<'p, 's, S: Source<'s> + 's> ModuleProvider<'s> for ContextPdbData<'p, 's, S> {
     fn get_module_info(
         &self,
-        module_index: u16,
+        module_index: usize,
         module: &Module,
     ) -> std::result::Result<Option<&ModuleInfo<'s>>, pdb::Error> {
         if let Some(module_info) = self.module_infos.get(&module_index) {
@@ -319,7 +319,7 @@ impl<'a, 's> Context<'a, 's> {
             if !is_executable_section(section_index, sections) {
                 continue;
             }
-            let size = section.physical_address; // this field has the wrong name (pdb #121)
+            let size = section.virtual_size;
             let section_end_offset = PdbInternalSectionOffset::new(section_index, size);
             global_functions.push(PublicSymbolFunctionOrPlaceholder {
                 start_offset: section_end_offset,
@@ -830,23 +830,26 @@ struct ContextCache<'a, 's> {
     module_cache: BasicModuleInfoCache<'a, 's>,
     function_line_cache: HashMap<PdbInternalSectionOffset, FunctionLineInfo>,
     procedure_cache: HashMap<PdbInternalSectionOffset, ExtendedProcedureInfo>,
-    extended_module_cache: BTreeMap<u16, Result<ExtendedModuleInfo<'a, 's>>>,
+    extended_module_cache: BTreeMap<usize, Result<ExtendedModuleInfo<'a, 's>>>,
     inline_name_cache: BTreeMap<IdIndex, Result<String>>,
     full_rva_list: Option<Rc<Vec<u32>>>,
 }
 
 struct BasicModuleInfoCache<'a, 's> {
-    cache: HashMap<u16, Option<BasicModuleInfo<'a, 's>>>,
+    cache: HashMap<usize, Option<BasicModuleInfo<'a, 's>>>,
     modules: Rc<Vec<Module<'a>>>,
     module_info_provider: &'a dyn ModuleProvider<'s>,
 }
 
 impl<'a, 's> BasicModuleInfoCache<'a, 's> {
-    pub fn module_count(&self) -> u16 {
-        self.modules.len() as u16
+    pub fn module_count(&self) -> usize {
+        self.modules.len()
     }
 
-    pub fn get_basic_module_info(&mut self, module_index: u16) -> Option<&BasicModuleInfo<'a, 's>> {
+    pub fn get_basic_module_info(
+        &mut self,
+        module_index: usize,
+    ) -> Option<&BasicModuleInfo<'a, 's>> {
         // TODO: 2021 edition
         let modules = &self.modules;
         let module_info_provider = self.module_info_provider;
@@ -956,7 +959,7 @@ pub struct ModuleSectionContribution {
     section_index: u16,
     start_offset: u32,
     end_offset: u32,
-    module_index: u16,
+    module_index: usize,
 }
 
 /// Returns an array of non-overlapping `ModuleSectionContribution` objects,
@@ -1057,9 +1060,8 @@ fn get_section(section_index: u16, sections: &[ImageSectionHeader]) -> Option<&I
 
 /// section_index is a 1-based index from PdbInternalSectionOffset.
 fn is_executable_section(section_index: u16, sections: &[ImageSectionHeader]) -> bool {
-    const IMAGE_SCN_MEM_EXECUTE: u32 = 0x20000000;
     match get_section(section_index, sections) {
-        Some(section) => section.characteristics & IMAGE_SCN_MEM_EXECUTE != 0,
+        Some(section) => section.characteristics.execute(), // TODO: should this use .executable()?
         None => false,
     }
 }
@@ -1102,8 +1104,8 @@ struct ProcedureSymbolFunction<'a> {
 }
 
 enum PublicOrProcedureSymbol<'a, 's, 'm> {
-    Public(u16, Option<&'a ModuleInfo<'s>>, usize),
-    Procedure(u16, &'a ModuleInfo<'s>, &'m ProcedureSymbolFunction<'a>),
+    Public(usize, Option<&'a ModuleInfo<'s>>, usize),
+    Procedure(usize, &'a ModuleInfo<'s>, &'m ProcedureSymbolFunction<'a>),
 }
 
 #[derive(Default)]
@@ -1120,7 +1122,7 @@ impl FunctionLineInfo {
         let lines = self
             .lines
             .get_or_insert_with(|| {
-                let mut iterator = line_program.lines_at_offset(function_offset);
+                let mut iterator = line_program.lines_for_symbol(function_offset);
                 let mut lines = Vec::new();
                 let mut next_item = iterator.next()?;
                 while let Some(line_info) = next_item {
@@ -1151,7 +1153,7 @@ impl ExtendedProcedureInfo {
         proc: &ProcedureSymbolFunction,
         type_formatter: &TypeFormatter,
         global_functions: &[PublicSymbolFunctionOrPlaceholder],
-        module_index: u16,
+        module_index: usize,
     ) -> Option<&str> {
         self.name
             .get_or_insert_with(|| {

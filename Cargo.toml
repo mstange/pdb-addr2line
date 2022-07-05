@@ -16,7 +16,7 @@ exclude = ["/.github", "/tests"]
 [dependencies]
 bitflags = "1.0"
 maybe-owned = "0.3.4"
-pdb = "0.7.0"
+pdb = "0.8.0"
 range-collections = "0.2.4"
 thiserror = "1.0"
 elsa = "1.4.0"

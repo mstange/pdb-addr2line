@@ -17,10 +17,10 @@ pub enum Error {
     MemberFunctionIdIsNotMemberFunctionType,
 
     #[error("There are consecutive section contributions for module {0} and section {1} which are not ordered by offset")]
-    UnorderedSectionContributions(u16, u16),
+    UnorderedSectionContributions(usize, u16),
 
     #[error("Overlapping section contributions in section {0} from modules {1} and {2}")]
-    OverlappingSectionContributions(u16, u16, u16),
+    OverlappingSectionContributions(u16, usize, usize),
 
     #[error("Getting the procedure lines was unsuccessful")]
     ProcedureLinesUnsuccessful,
@@ -47,10 +47,10 @@ pub enum Error {
     LocalIndexNotInExports(u32),
 
     #[error("The module index {0} was out-of-range.")]
-    OutOfRangeModuleIndex(u16),
+    OutOfRangeModuleIndex(usize),
 
     #[error("Could not get the ModuleInfo for module index {0}")]
-    ModuleInfoNotFound(u16),
+    ModuleInfoNotFound(usize),
 }
 
 impl From<pdb::Error> for Error {

@@ -58,7 +58,7 @@ pub trait ModuleProvider<'s> {
     /// Get the module info for this module from the PDB.
     fn get_module_info(
         &self,
-        module_index: u16,
+        module_index: usize,
         module: &Module,
     ) -> std::result::Result<Option<&ModuleInfo<'s>>, pdb::Error>;
 }
@@ -80,7 +80,7 @@ pub struct TypeFormatter<'a, 's> {
     pub(crate) modules: Rc<Vec<Module<'a>>>,
     string_table: Option<&'a StringTable<'s>>,
     cache: RefCell<TypeFormatterCache<'a>>,
-    ptr_size: u32,
+    ptr_size: u64,
     flags: TypeFormatterFlags,
 }
 
@@ -89,9 +89,9 @@ struct TypeFormatterCache<'a> {
     type_size_cache: TypeSizeCache<'a>,
     id_map: IdMap<'a>,
     /// lower case module_name() -> module_index
-    module_name_map: Option<HashMap<String, u16>>,
-    module_imports: HashMap<u16, Result<CrossModuleImports<'a>>>,
-    module_exports: HashMap<u16, Result<CrossModuleExports>>,
+    module_name_map: Option<HashMap<String, usize>>,
+    module_imports: HashMap<usize, Result<CrossModuleImports<'a>>>,
+    module_exports: HashMap<usize, Result<CrossModuleExports>>,
 }
 
 // 'a: Lifetime of the thing that owns the various streams.
@@ -99,12 +99,12 @@ struct TypeFormatterCache<'a> {
 // 'c: Lifetime of the exclusive reference to the TypeFormatterCache, outlived by
 //     the reference to the TypeFormatter.
 struct TypeFormatterForModule<'c, 'a, 's> {
-    module_index: u16,
+    module_index: usize,
     module_provider: &'a dyn ModuleProvider<'s>,
     modules: &'c [Module<'a>],
     string_table: Option<&'a StringTable<'s>>,
     cache: &'c mut TypeFormatterCache<'a>,
-    ptr_size: u32,
+    ptr_size: u64,
     flags: TypeFormatterFlags,
 }
 
@@ -161,7 +161,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
         })
     }
 
-    fn for_module<F, R>(&self, module_index: u16, f: F) -> R
+    fn for_module<F, R>(&self, module_index: usize, f: F) -> R
     where
         F: FnOnce(&mut TypeFormatterForModule<'_, 'a, 's>) -> R,
     {
@@ -179,7 +179,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
     }
 
     /// Get the size, in bytes, of the type at `index`.
-    pub fn get_type_size(&self, module_index: u16, index: TypeIndex) -> u32 {
+    pub fn get_type_size(&self, module_index: usize, index: TypeIndex) -> u64 {
         self.for_module(module_index, |tf| tf.get_type_size(index))
     }
 
@@ -194,7 +194,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
     pub fn format_function(
         &self,
         name: &str,
-        module_index: u16,
+        module_index: usize,
         function_type_index: TypeIndex,
     ) -> Result<String> {
         let mut s = String::new();
@@ -214,7 +214,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
         &self,
         w: &mut impl Write,
         name: &str,
-        module_index: u16,
+        module_index: usize,
         function_type_index: TypeIndex,
     ) -> Result<()> {
         self.for_module(module_index, |tf| {
@@ -227,7 +227,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
     /// This method is used for inlined functions.
     /// The module_index is the index of the module in which this IdIndex was found. It
     /// is necessary in order to properly resolve cross-module references.
-    pub fn format_id(&self, module_index: u16, id_index: IdIndex) -> Result<String> {
+    pub fn format_id(&self, module_index: usize, id_index: IdIndex) -> Result<String> {
         let mut s = String::new();
         self.emit_id(&mut s, module_index, id_index)?;
         Ok(s)
@@ -238,14 +238,19 @@ impl<'a, 's> TypeFormatter<'a, 's> {
     /// This method is used for inlined functions.
     /// The module_index is the index of the module in which this IdIndex was found. It
     /// is necessary in order to properly resolve cross-module references.
-    pub fn emit_id(&self, w: &mut impl Write, module_index: u16, id_index: IdIndex) -> Result<()> {
+    pub fn emit_id(
+        &self,
+        w: &mut impl Write,
+        module_index: usize,
+        id_index: IdIndex,
+    ) -> Result<()> {
         self.for_module(module_index, |tf| tf.emit_id(w, id_index))
     }
 }
 
 impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
     /// Get the size, in bytes, of the type at `index`.
-    pub fn get_type_size(&mut self, index: TypeIndex) -> u32 {
+    pub fn get_type_size(&mut self, index: TypeIndex) -> u64 {
         if let Ok(type_data) = self.parse_type_index(index) {
             self.get_data_size(index, &type_data)
         } else {
@@ -393,9 +398,9 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
         let module_provider = self.module_provider;
         let self_module_index = self.module_index;
 
-        let get_module = |module_index: u16| -> Result<&'a ModuleInfo<'s>> {
+        let get_module = |module_index: usize| -> Result<&'a ModuleInfo<'s>> {
             let module = modules
-                .get(module_index as usize)
+                .get(module_index)
                 .ok_or(Error::OutOfRangeModuleIndex(module_index))?;
             let module_info = module_provider
                 .get_module_info(module_index, module)?
@@ -409,7 +414,7 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
                 .enumerate()
                 .map(|(module_index, module)| {
                     let name = module.module_name().to_ascii_lowercase();
-                    (name, module_index as u16)
+                    (name, module_index)
                 })
                 .collect()
         });
@@ -465,7 +470,7 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
         Ok(item.parse()?)
     }
 
-    fn get_class_size(&mut self, index: TypeIndex, class_type: &ClassType<'a>) -> u32 {
+    fn get_class_size(&mut self, index: TypeIndex, class_type: &ClassType<'a>) -> u64 {
         if class_type.properties.forward_reference() {
             let name = class_type.unique_name.unwrap_or(class_type.name);
             let size = self.cache.type_size_cache.get_size_for_forward_reference(
@@ -476,13 +481,13 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
 
             // Sometimes the name will not be in self.forward_ref_sizes - this can occur for
             // the empty struct, which can be a forward reference to itself!
-            size.unwrap_or(class_type.size as u32)
+            size.unwrap_or(class_type.size)
         } else {
-            class_type.size.into()
+            class_type.size
         }
     }
 
-    fn get_union_size(&mut self, index: TypeIndex, union_type: &UnionType<'a>) -> u32 {
+    fn get_union_size(&mut self, index: TypeIndex, union_type: &UnionType<'a>) -> u64 {
         if union_type.properties.forward_reference() {
             let name = union_type.unique_name.unwrap_or(union_type.name);
             let size = self.cache.type_size_cache.get_size_for_forward_reference(
@@ -497,7 +502,7 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
         }
     }
 
-    fn get_data_size(&mut self, type_index: TypeIndex, type_data: &TypeData<'a>) -> u32 {
+    fn get_data_size(&mut self, type_index: TypeIndex, type_data: &TypeData<'a>) -> u64 {
         match type_data {
             TypeData::Primitive(t) => {
                 if t.indirection.is_some() {
@@ -552,7 +557,7 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
             TypeData::MemberFunction(_) => self.ptr_size,
             TypeData::Procedure(_) => self.ptr_size,
             TypeData::Pointer(t) => t.attributes.size().into(),
-            TypeData::Array(t) => *t.dimensions.last().unwrap(),
+            TypeData::Array(t) => (*t.dimensions.last().unwrap()).into(),
             TypeData::Union(t) => self.get_union_size(type_index, t),
             TypeData::Enumeration(t) => self.get_type_size(t.underlying_type),
             TypeData::Enumerate(t) => match t.value {
@@ -866,13 +871,13 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
 
     /// The returned Vec has the array dimensions in bytes, with the "lower" dimensions
     /// aggregated into the "higher" dimensions.
-    fn get_array_info(&mut self, array: ArrayType) -> Result<(Vec<u32>, TypeIndex, TypeData<'a>)> {
+    fn get_array_info(&mut self, array: ArrayType) -> Result<(Vec<u64>, TypeIndex, TypeData<'a>)> {
         // For an array int[12][34] it'll be represented as "int[34] *".
         // For any reason the 12 is lost...
         // The internal representation is: Pointer{ base: Array{ base: int, dim: 34 * sizeof(int)} }
         let mut base = array;
         let mut dims = Vec::new();
-        dims.push(base.dimensions[0]);
+        dims.push(base.dimensions[0].into());
 
         // See the documentation for ArrayType::dimensions:
         //
@@ -893,7 +898,7 @@ impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
             let type_data = self.parse_type_index(type_index)?;
             match type_data {
                 TypeData::Array(a) => {
-                    dims.push(a.dimensions[0]);
+                    dims.push(a.dimensions[0].into());
                     base = a;
                 }
                 _ => {
@@ -1161,7 +1166,7 @@ struct TypeSizeCache<'a> {
     ///
     /// Type sizes are needed when computing array lengths based on byte lengths, when
     /// printing array types. They are also needed for the public get_type_size method.
-    forward_ref_sizes: HashMap<RawString<'a>, u32>,
+    forward_ref_sizes: HashMap<RawString<'a>, u64>,
 
     cached_ranges: RangeSet2<u32>,
 }
@@ -1172,7 +1177,7 @@ impl<'a> TypeSizeCache<'a> {
         index: TypeIndex,
         name: RawString<'a>,
         type_map: &mut TypeMap<'a>,
-    ) -> Option<u32> {
+    ) -> Option<u64> {
         if let Some(size) = self.forward_ref_sizes.get(&name) {
             return Some(*size);
         }
@@ -1215,14 +1220,14 @@ impl<'a> TypeSizeCache<'a> {
     pub fn update_forward_ref_size_map(
         &mut self,
         item: &Item<'a, TypeIndex>,
-    ) -> Option<(RawString<'a>, u32)> {
+    ) -> Option<(RawString<'a>, u64)> {
         if let Ok(type_data) = item.parse() {
             match type_data {
                 TypeData::Class(t) => {
                     if !t.properties.forward_reference() {
                         let name = t.unique_name.unwrap_or(t.name);
-                        self.forward_ref_sizes.insert(name, t.size.into());
-                        return Some((name, t.size.into()));
+                        self.forward_ref_sizes.insert(name, t.size);
+                        return Some((name, t.size));
                     }
                 }
                 TypeData::Union(t) => {
