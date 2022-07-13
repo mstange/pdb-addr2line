@@ -23,9 +23,9 @@ The implementation makes use of the excellent [`pdb` crate](https://crates.io/cr
 ```rust
 use pdb_addr2line::pdb; // (this is a re-export of the pdb crate)
 
-fn look_up_addresses<'s, S: pdb::Source<'s> + 's>(stream: S, addresses: &[u32]) -> pdb::Result<()> {
-    let mut pdb = pdb::PDB::open(stream)?;
-    let context_data = pdb_addr2line::ContextPdbData::try_from_pdb(&mut pdb)?;
+fn look_up_addresses<'s, S: pdb::Source<'s> + 's>(stream: S, addresses: &[u32]) -> std::result::Result<(), pdb_addr2line::Error> {
+    let pdb = pdb::PDB::open(stream)?;
+    let context_data = pdb_addr2line::ContextPdbData::try_from_pdb(pdb)?;
     let context = context_data.make_context()?;
 
     for address in addresses {

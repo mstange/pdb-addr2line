@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```
-//! use pdb_addr2line::pdb;
+//! use pdb_addr2line::pdb; // (this is a re-export of the pdb crate)
 //!
 //! fn look_up_addresses<'s, S: pdb::Source<'s> + 's>(stream: S, addresses: &[u32]) -> std::result::Result<(), pdb_addr2line::Error> {
 //!     let pdb = pdb::PDB::open(stream)?;
