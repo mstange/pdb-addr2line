@@ -63,6 +63,7 @@ use pdb::{
 use range_collections::{AbstractRangeSet, RangeSet, RangeSet2};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::fmt::LowerHex;
 use std::mem;
 use std::ops::Bound;
 use std::rc::Rc;
@@ -1350,12 +1351,42 @@ struct CachedLineInfo {
     pub line_start: u32,
 }
 
-#[derive(Clone, Debug)]
+struct HexNum<N: LowerHex>(pub N);
+
+impl<N: LowerHex> std::fmt::Debug for HexNum<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        LowerHex::fmt(&self.0, f)
+    }
+}
+
+/// A contiguous address range covering a line record inside an
+/// inlined function call. These are meaningful in the context of the
+/// outer function which contains these inline calls; specifically, the
+/// offsets are expressed relative to the same section that the outer
+/// function is in.
+#[derive(Clone)]
 struct InlineRange {
+    /// The section-internal offset of the start of the range,
+    /// relative to the section that the outer function is in.
     pub start_offset: u32,
+    /// The section-internal offset of the end of the range,
+    /// relative to the section that the outer function is in.
     pub end_offset: u32,
     pub call_depth: u16,
     pub inlinee: IdIndex,
     pub file_index: Option<FileIndex>,
     pub line_start: Option<u32>,
+}
+
+impl std::fmt::Debug for InlineRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InlineRange")
+            .field("start_offset", &HexNum(self.start_offset))
+            .field("end_offset", &HexNum(self.end_offset))
+            .field("call_depth", &self.call_depth)
+            .field("inlinee", &self.inlinee)
+            .field("file_index", &self.file_index)
+            .field("line_start", &self.line_start)
+            .finish()
+    }
 }
