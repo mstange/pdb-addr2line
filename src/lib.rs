@@ -158,11 +158,10 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
         // that we can call pdb.module_info with the right module, which we look up based
         // on its module_index.
         let modules = self.debug_info.modules()?.collect::<Vec<_>>()?;
-        let modules = Rc::new(modules);
 
         Ok(TypeFormatter::new_from_parts(
             self,
-            modules.clone(),
+            modules,
             &self.debug_info,
             &self.type_info,
             &self.id_info,
@@ -182,7 +181,6 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
         flags: TypeFormatterFlags,
     ) -> Result<Context<'_, 's>> {
         let type_formatter = self.make_type_formatter_with_flags(flags)?;
-        let modules = type_formatter.modules.clone();
         let sections = self.pdb.borrow_mut().sections()?;
 
         Context::new_from_parts(
@@ -193,7 +191,6 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
             self.string_table.as_ref(),
             &self.debug_info,
             MaybeOwned::Owned(type_formatter),
-            modules,
         )
     }
 }
@@ -284,7 +281,6 @@ impl<'a, 's> Context<'a, 's> {
         string_table: Option<&'a StringTable<'s>>,
         debug_info: &'a DebugInformation,
         type_formatter: MaybeOwned<'a, TypeFormatter<'a, 's>>,
-        modules: Rc<Vec<Module<'a>>>,
     ) -> Result<Self> {
         let mut global_functions = Vec::new();
 
@@ -350,7 +346,6 @@ impl<'a, 's> Context<'a, 's> {
             cache: RefCell::new(ContextCache {
                 module_cache: BasicModuleInfoCache {
                     cache: Default::default(),
-                    modules,
                     module_info_provider,
                 },
                 function_line_cache: Default::default(),
@@ -661,9 +656,9 @@ impl<'a, 's> Context<'a, 's> {
                 list.push(rva.0);
             }
         }
-        for module_index in 0..module_cache.module_count() {
+        for module_index in 0..self.type_formatter.modules().len() {
             if let Some(BasicModuleInfo { procedures, .. }) =
-                module_cache.get_basic_module_info(module_index)
+                module_cache.get_basic_module_info(self.type_formatter.modules(), module_index)
             {
                 for proc in procedures {
                     if let Some(rva) = proc.offset.to_rva(self.address_map) {
@@ -703,7 +698,8 @@ impl<'a, 's> Context<'a, 's> {
         };
 
         let sc = &self.section_contributions[sc_index];
-        let basic_module_info = module_cache.get_basic_module_info(sc.module_index);
+        let basic_module_info =
+            module_cache.get_basic_module_info(self.type_formatter.modules(), sc.module_index);
 
         let module_info = if let Some(BasicModuleInfo {
             procedures,
@@ -838,21 +834,16 @@ struct ContextCache<'a, 's> {
 
 struct BasicModuleInfoCache<'a, 's> {
     cache: HashMap<usize, Option<BasicModuleInfo<'a, 's>>>,
-    modules: Rc<Vec<Module<'a>>>,
     module_info_provider: &'a dyn ModuleProvider<'s>,
 }
 
 impl<'a, 's> BasicModuleInfoCache<'a, 's> {
-    pub fn module_count(&self) -> usize {
-        self.modules.len()
-    }
-
     pub fn get_basic_module_info(
         &mut self,
+        modules: &[Module<'a>],
         module_index: usize,
     ) -> Option<&BasicModuleInfo<'a, 's>> {
         // TODO: 2021 edition
-        let modules = &self.modules;
         let module_info_provider = self.module_info_provider;
 
         self.cache

@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::mem;
 use std::ops::Bound;
-use std::rc::Rc;
 
 type Result<V> = std::result::Result<V, Error>;
 
@@ -77,7 +76,7 @@ pub trait ModuleProvider<'s> {
 // 's: The PDB Source lifetime.
 pub struct TypeFormatter<'a, 's> {
     module_provider: &'a dyn ModuleProvider<'s>,
-    pub(crate) modules: Rc<Vec<Module<'a>>>,
+    modules: Vec<Module<'a>>,
     string_table: Option<&'a StringTable<'s>>,
     cache: RefCell<TypeFormatterCache<'a>>,
     ptr_size: u64,
@@ -96,14 +95,14 @@ struct TypeFormatterCache<'a> {
 
 // 'a: Lifetime of the thing that owns the various streams.
 // 's: The PDB Source lifetime.
-// 'c: Lifetime of the exclusive reference to the TypeFormatterCache, outlived by
-//     the reference to the TypeFormatter.
-struct TypeFormatterForModule<'c, 'a, 's> {
+// 'cache: Lifetime of the exclusive reference to the TypeFormatterCache, outlived by
+//         the reference to the TypeFormatter.
+struct TypeFormatterForModule<'cache, 'a, 's> {
     module_index: usize,
     module_provider: &'a dyn ModuleProvider<'s>,
-    modules: &'c [Module<'a>],
+    modules: &'cache [Module<'a>],
     string_table: Option<&'a StringTable<'s>>,
-    cache: &'c mut TypeFormatterCache<'a>,
+    cache: &'cache mut TypeFormatterCache<'a>,
     ptr_size: u64,
     flags: TypeFormatterFlags,
 }
@@ -117,7 +116,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
     /// from repeatedly parsing the same streams.
     pub fn new_from_parts(
         module_provider: &'a dyn ModuleProvider<'s>,
-        modules: Rc<Vec<Module<'a>>>,
+        modules: Vec<Module<'a>>,
         debug_info: &DebugInformation<'s>,
         type_info: &'a TypeInformation<'s>,
         id_info: &'a IdInformation<'s>,
@@ -159,6 +158,11 @@ impl<'a, 's> TypeFormatter<'a, 's> {
             ptr_size,
             flags,
         })
+    }
+
+    /// A reference to the `Module` list that is owned by the type formatter.
+    pub fn modules(&self) -> &[Module<'a>] {
+        &self.modules
     }
 
     fn for_module<F, R>(&self, module_index: usize, f: F) -> R
@@ -248,7 +252,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
     }
 }
 
-impl<'c, 'a, 's> TypeFormatterForModule<'c, 'a, 's> {
+impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
     /// Get the size, in bytes, of the type at `index`.
     pub fn get_type_size(&mut self, index: TypeIndex) -> u64 {
         if let Ok(type_data) = self.parse_type_index(index) {
