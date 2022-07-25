@@ -1084,7 +1084,6 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
                 return Ok(());
             }
             Err(e) => {
-                println!("Error in emit_type_index: {:?}", e);
                 return Err(e);
             }
         };
