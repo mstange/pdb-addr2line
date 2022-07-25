@@ -304,7 +304,7 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
     /// namespace and/or class qualifiers, and arguments.
     /// This method is used for inlined functions.
     pub fn emit_id(&mut self, w: &mut impl Write, id_index: IdIndex) -> Result<()> {
-        let id_data = match self.parsee_id_index(id_index) {
+        let id_data = match self.parse_id_index(id_index) {
             Ok(id_data) => id_data,
             Err(Error::PdbError(pdb::Error::UnimplementedTypeKind(t))) => {
                 write!(w, "<unimplemented type kind 0x{:x}>", t)?;
@@ -472,7 +472,7 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
         Ok(item.parse()?)
     }
 
-    fn parsee_id_index(&mut self, index: IdIndex) -> Result<IdData<'a>> {
+    fn parse_id_index(&mut self, index: IdIndex) -> Result<IdData<'a>> {
         let index = self.resolve_index(index)?;
         let item = self.cache.id_map.try_get(index)?;
         Ok(item.parse()?)
