@@ -310,6 +310,10 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
                 write!(w, "<unimplemented type kind 0x{:x}>", t)?;
                 return Ok(());
             }
+            Err(Error::PdbError(pdb::Error::TypeNotFound(type_index))) => {
+                write!(w, "<missing type 0x{:x}>", type_index)?;
+                return Ok(());
+            }
             Err(e) => return Err(e),
         };
         match id_data {
@@ -1075,13 +1079,31 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
                 write!(w, "<unimplemented type kind 0x{:x}>", t)?;
                 return Ok(());
             }
-            Err(e) => return Err(e),
+            Err(Error::PdbError(pdb::Error::TypeNotFound(type_index))) => {
+                write!(w, "<missing type 0x{:x}>", type_index)?;
+                return Ok(());
+            }
+            Err(e) => {
+                println!("Error in emit_type_index: {:?}", e);
+                return Err(e);
+            }
         };
 
         self.emit_type(w, type_data)
     }
 
     fn emit_type(&mut self, w: &mut impl Write, type_data: TypeData) -> Result<()> {
+        match self.emit_type_inner(w, type_data) {
+            Ok(()) => Ok(()),
+            Err(Error::PdbError(pdb::Error::TypeNotFound(type_index))) => {
+                write!(w, "<missing type 0x{:x}>", type_index)?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn emit_type_inner(&mut self, w: &mut impl Write, type_data: TypeData) -> Result<()> {
         match type_data {
             TypeData::Primitive(t) => self.emit_primitive(w, t, false)?,
             TypeData::Class(t) => self.emit_class(w, t)?,
