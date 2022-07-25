@@ -1073,22 +1073,18 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
     }
 
     fn emit_type_index(&mut self, w: &mut impl Write, index: TypeIndex) -> Result<()> {
-        let type_data = match self.parse_type_index(index) {
-            Ok(type_data) => type_data,
+        match self.parse_type_index(index) {
+            Ok(type_data) => self.emit_type(w, type_data),
             Err(Error::PdbError(pdb::Error::UnimplementedTypeKind(t))) => {
                 write!(w, "<unimplemented type kind 0x{:x}>", t)?;
-                return Ok(());
+                Ok(())
             }
             Err(Error::PdbError(pdb::Error::TypeNotFound(type_index))) => {
                 write!(w, "<missing type 0x{:x}>", type_index)?;
-                return Ok(());
+                Ok(())
             }
-            Err(e) => {
-                return Err(e);
-            }
-        };
-
-        self.emit_type(w, type_data)
+            Err(e) => Err(e),
+        }
     }
 
     fn emit_type(&mut self, w: &mut impl Write, type_data: TypeData) -> Result<()> {
