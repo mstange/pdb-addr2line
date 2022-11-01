@@ -292,9 +292,12 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
             TypeData::Procedure(t) => {
                 self.maybe_emit_return_type(w, t.return_type, t.attributes)?;
                 self.emit_name_str(w, name)?;
-                write!(w, "(")?;
-                self.emit_type_index(w, t.argument_list)?;
-                write!(w, ")")?;
+
+                if !self.has_flags(TypeFormatterFlags::NO_ARGUMENTS) {
+                    write!(w, "(")?;
+                    self.emit_type_index(w, t.argument_list)?;
+                    write!(w, ")")?;
+                }
             }
             _ => {
                 write!(w, "{}", name)?;
