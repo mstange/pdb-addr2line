@@ -175,7 +175,7 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
         self.make_context_with_formatter_flags(Default::default())
     }
 
-    /// Create a [`Context`], using the specified [`TypeFormatter`] flags.
+    /// Create a [`Context`], using the specified [`TypeFormatterFlags`].
     pub fn make_context_with_formatter_flags(
         &self,
         flags: TypeFormatterFlags,
