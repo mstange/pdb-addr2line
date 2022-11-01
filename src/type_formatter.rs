@@ -35,6 +35,9 @@ bitflags! {
 
         /// Only print "MyClassName" instead of "class MyClassName", "struct MyClassName", or "interface MyClassName".
         const NAME_ONLY = 0b10000;
+
+        /// Do not print a functions argument types.
+        const NO_ARGUMENTS = 0b100000;
     }
 }
 
@@ -343,10 +346,14 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
                     self.emit_id(w, scope)?;
                     write!(w, "::")?;
                 }
+
                 self.emit_name_str(w, &f.name.to_string())?;
-                write!(w, "(")?;
-                self.emit_type_index(w, t.argument_list)?;
-                write!(w, ")")?;
+
+                if !self.has_flags(TypeFormatterFlags::NO_ARGUMENTS) {
+                    write!(w, "(")?;
+                    self.emit_type_index(w, t.argument_list)?;
+                    write!(w, ")")?;
+                }
             }
             IdData::String(s) => {
                 let name = s.name.to_string();
@@ -683,6 +690,10 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
         method_type: MemberFunctionType,
         allow_emit_const: bool,
     ) -> Result<()> {
+        if self.has_flags(TypeFormatterFlags::NO_ARGUMENTS) {
+            return Ok(());
+        }
+
         let args_list = match self.parse_type_index(method_type.argument_list)? {
             TypeData::ArgumentList(t) => t,
             _ => {

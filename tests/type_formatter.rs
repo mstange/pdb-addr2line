@@ -4,7 +4,7 @@ use std::{
 };
 
 use pdb::IdIndex;
-use pdb_addr2line::{pdb, ContextPdbData};
+use pdb_addr2line::{pdb, ContextPdbData, TypeFormatterFlags};
 
 /// Returns the full path to the specified fixture.
 fn fixture<P: AsRef<Path>>(path: P) -> PathBuf {
@@ -29,6 +29,9 @@ fn test() -> Result<(), Box<dyn Error>> {
     let file = std::fs::File::open(fixture("crash.pdb"))?;
     let data = ContextPdbData::try_from_pdb(pdb::PDB::open(file)?)?;
     let formatter = data.make_type_formatter()?;
+    let formatter_without_args = data.make_type_formatter_with_flags(
+        TypeFormatterFlags::default() | TypeFormatterFlags::NO_ARGUMENTS,
+    )?;
 
     assert_eq!(
         formatter.format_id(0, IdIndex(0x12fe))?,
@@ -45,6 +48,15 @@ fn test() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         formatter.format_id(4, IdIndex(0x80000007))?,
         "std::_Adjust_manually_vector_aligned(void*&, unsigned int&)"
+    );
+
+    assert_eq!(
+        formatter_without_args.format_id(4, IdIndex(0x80000013))?,
+        "std::allocator<wchar_t>::deallocate"
+    );
+    assert_eq!(
+        formatter_without_args.format_id(4, IdIndex(0x80000007))?,
+        "std::_Adjust_manually_vector_aligned"
     );
 
     Ok(())
