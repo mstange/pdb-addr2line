@@ -13,7 +13,7 @@ fn fixture<P: AsRef<Path>>(path: P) -> PathBuf {
     full_path.push("fixtures");
 
     let path = path.as_ref();
-    full_path.push(&path);
+    full_path.push(path);
 
     assert!(
         full_path.exists(),

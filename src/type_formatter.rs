@@ -178,7 +178,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
             module_provider: self.module_provider,
             modules: &self.modules,
             string_table: self.string_table,
-            cache: &mut *cache,
+            cache: &mut cache,
             ptr_size: self.ptr_size,
             flags: self.flags,
         };
