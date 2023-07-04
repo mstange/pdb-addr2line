@@ -226,19 +226,6 @@ pub struct Function {
     pub name: Option<String>,
 }
 
-/// The result of an address lookup from [`Context::find_frames`].
-#[derive(Clone)]
-pub struct FunctionFrames<'a> {
-    /// The start address of the function which contained the looked-up address.
-    pub start_rva: u32,
-    /// The end address of the function which contained the looked-up address, if known.
-    pub end_rva: Option<u32>,
-    /// The inline stack at the looked-up address, ordered from inside to outside.
-    /// Always contains at least one entry: the last element is always the function
-    /// which contains the looked-up address.
-    pub frames: Vec<Frame<'a>>,
-}
-
 /// One frame of the inline stack at the looked-up address.
 #[derive(Clone)]
 pub struct Frame<'a> {
@@ -246,6 +233,10 @@ pub struct Frame<'a> {
     pub function: Option<String>,
     /// The file name, if known.
     pub file: Option<Cow<'a, str>>,
+    /// The start address of the function which contained the looked-up address.
+    pub start_rva: u32,
+    /// The end address of the function which contained the looked-up address, if known.
+    pub end_rva: Option<u32>,
     /// The line number, if known. This is the source line inside this function
     /// that is associated with the instruction at the looked-up address.
     pub line: Option<u32>,
@@ -457,7 +448,7 @@ impl<'a, 's> Context<'a, 's> {
     /// into the procedure by the compiler, at that address.
     ///
     /// A lot of information is cached so that repeated calls are fast.
-    pub fn find_frames(&self, probe: u32) -> Result<Option<FunctionFrames>> {
+    pub fn find_frames(&self, probe: u32) -> Result<Option<Vec<Frame>>> {
         let offset = match Rva(probe).to_internal_offset(self.address_map) {
             Some(offset) => offset,
             None => return Ok(None),
@@ -564,9 +555,17 @@ impl<'a, 's> Context<'a, 's> {
             (None, None)
         };
 
+        let start_rva = match func_offset.to_rva(self.address_map) {
+            Some(rva) => rva.0,
+            None => return Ok(None),
+        };
+        let end_rva = func_size.and_then(|size| start_rva.checked_add(size));
+
         let frame = Frame {
             function: func_name,
             file,
+            start_rva,
+            end_rva,
             line,
         };
 
@@ -623,9 +622,23 @@ impl<'a, 's> Context<'a, 's> {
                     .file_index
                     .and_then(|file_index| self.resolve_filename(line_program, file_index));
                 let line = inline_range.line_start;
+
+                let start_internal = PdbInternalSectionOffset {
+                    offset: inline_range.start_offset,
+                    section: func_offset.section,
+                };
+                let start_rva = match start_internal.to_rva(self.address_map) {
+                    Some(rva) => rva.0,
+                    None => return Ok(None),
+                };
+                let end_rva =
+                    start_rva.checked_add(inline_range.end_offset - inline_range.start_offset);
+
                 frames.push(Frame {
                     function,
                     file,
+                    start_rva,
+                    end_rva,
                     line,
                 });
 
@@ -636,17 +649,7 @@ impl<'a, 's> Context<'a, 's> {
             frames.reverse();
         }
 
-        let start_rva = match func_offset.to_rva(self.address_map) {
-            Some(rva) => rva.0,
-            None => return Ok(None),
-        };
-        let end_rva = func_size.and_then(|size| start_rva.checked_add(size));
-
-        Ok(Some(FunctionFrames {
-            start_rva,
-            end_rva,
-            frames,
-        }))
+        Ok(Some(frames))
     }
 
     fn compute_full_rva_list(&self, module_cache: &mut BasicModuleInfoCache<'a, 's>) -> Vec<u32> {
