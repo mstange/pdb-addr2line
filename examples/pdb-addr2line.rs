@@ -276,7 +276,7 @@ impl<'s> pdb::Source<'s> for Source {
     fn view(
         &mut self,
         slices: &[pdb::SourceSlice],
-    ) -> Result<Box<dyn pdb::SourceView<'s>>, std::io::Error> {
+    ) -> Result<Box<dyn pdb::SourceView<'s> + Send + Sync>, std::io::Error> {
         let len = slices.iter().fold(0, |acc, s| acc + s.size);
 
         let mut bytes = Vec::with_capacity(len);

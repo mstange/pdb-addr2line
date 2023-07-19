@@ -16,7 +16,7 @@
 //! ```
 //! use pdb_addr2line::pdb; // (this is a re-export of the pdb crate)
 //!
-//! fn look_up_addresses<'s, S: pdb::Source<'s> + 's>(stream: S, addresses: &[u32]) -> std::result::Result<(), pdb_addr2line::Error> {
+//! fn look_up_addresses<'s, S: pdb::Source<'s> + Send + 's>(stream: S, addresses: &[u32]) -> std::result::Result<(), pdb_addr2line::Error> {
 //!     let pdb = pdb::PDB::open(stream)?;
 //!     let context_data = pdb_addr2line::ContextPdbData::try_from_pdb(pdb)?;
 //!     let context = context_data.make_context()?;
@@ -52,7 +52,7 @@ pub use error::Error;
 pub use type_formatter::*;
 
 use constants::*;
-use elsa::FrozenMap;
+use elsa::sync::FrozenMap;
 use maybe_owned::{MaybeOwned, MaybeOwnedMut};
 use pdb::{
     AddressMap, DebugInformation, FallibleIterator, FileIndex, IdIndex, IdInformation,
@@ -66,7 +66,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::LowerHex;
 use std::mem;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::{borrow::Cow, cell::RefCell, collections::BTreeMap};
 
 type Result<V> = std::result::Result<V, Error>;
@@ -74,7 +74,7 @@ type Result<V> = std::result::Result<V, Error>;
 /// Allows to easily create a [`Context`] directly from a [`pdb::PDB`].
 ///
 /// ```
-/// # fn wrapper<'s, S: pdb::Source<'s> + 's>(stream: S) -> std::result::Result<(), pdb_addr2line::Error> {
+/// # fn wrapper<'s, S: pdb::Source<'s> + Send + 's>(stream: S) -> std::result::Result<(), pdb_addr2line::Error> {
 /// let pdb = pdb::PDB::open(stream)?;
 /// let context_data = pdb_addr2line::ContextPdbData::try_from_pdb(pdb)?;
 /// let context = context_data.make_context()?;
@@ -90,8 +90,8 @@ type Result<V> = std::result::Result<V, Error>;
 /// which have a lifetime dependency on [`pdb::ModuleInfo`], so the [`ModuleInfo`] has to be
 /// owned outside of the [`Context`]. So the [`ContextPdbData`] object acts as that external
 /// [`ModuleInfo`] owner.
-pub struct ContextPdbData<'p, 's, S: Source<'s> + 's> {
-    pdb: RefCell<MaybeOwnedMut<'p, PDB<'s, S>>>,
+pub struct ContextPdbData<'p, 's, S: Source<'s> + Send + 's> {
+    pdb: Mutex<MaybeOwnedMut<'p, PDB<'s, S>>>,
 
     /// ModuleInfo objects are stored on this object (outside Context) so that the
     /// Context can internally store objects which have a lifetime dependency on
@@ -106,7 +106,14 @@ pub struct ContextPdbData<'p, 's, S: Source<'s> + 's> {
     id_info: IdInformation<'s>,
 }
 
-impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
+// Assert that `ContextPdbData` is Send.
+const _: fn() = || {
+    fn assert<T: ?Sized + Send>() {}
+    // Use `File` as `S` since it implements `Source` and is `Send`.
+    assert::<ContextPdbData<std::fs::File>>();
+};
+
+impl<'p, 's, S: Source<'s> + Send + 's> ContextPdbData<'p, 's, S> {
     /// Create a [`ContextPdbData`] from a [`PDB`](pdb::PDB). This parses many of the PDB
     /// streams and stores them in the [`ContextPdbData`].
     /// This creator function takes ownership of the pdb object and never gives it back.
@@ -131,7 +138,7 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
         let string_table = pdb.string_table().ok();
 
         Ok(Self {
-            pdb: RefCell::new(pdb),
+            pdb: Mutex::new(pdb),
             module_infos: FrozenMap::new(),
             global_symbols,
             debug_info,
@@ -181,7 +188,7 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
         flags: TypeFormatterFlags,
     ) -> Result<Context<'_, 's>> {
         let type_formatter = self.make_type_formatter_with_flags(flags)?;
-        let sections = self.pdb.borrow_mut().sections()?;
+        let sections = self.pdb.lock().unwrap().sections()?;
 
         Context::new_from_parts(
             self,
@@ -195,7 +202,7 @@ impl<'p, 's, S: Source<'s> + 's> ContextPdbData<'p, 's, S> {
     }
 }
 
-impl<'p, 's, S: Source<'s> + 's> ModuleProvider<'s> for ContextPdbData<'p, 's, S> {
+impl<'p, 's, S: Source<'s> + Send + 's> ModuleProvider<'s> for ContextPdbData<'p, 's, S> {
     fn get_module_info(
         &self,
         module_index: usize,
@@ -205,7 +212,7 @@ impl<'p, 's, S: Source<'s> + 's> ModuleProvider<'s> for ContextPdbData<'p, 's, S
             return Ok(Some(module_info));
         }
 
-        let mut pdb = self.pdb.borrow_mut();
+        let mut pdb = self.pdb.lock().unwrap();
         Ok(pdb.module_info(module)?.map(|module_info| {
             self.module_infos
                 .insert(module_index, Box::new(module_info))
@@ -265,6 +272,12 @@ pub struct Context<'a, 's> {
     cache: RefCell<ContextCache<'a, 's>>,
 }
 
+// Assert that `Context` is Send.
+const _: fn() = || {
+    fn assert<T: ?Sized + Send>() {}
+    assert::<Context>();
+};
+
 impl<'a, 's> Context<'a, 's> {
     /// Create a [`Context`] manually. Most consumers will want to use
     /// [`ContextPdbData::make_context`] instead.
@@ -274,7 +287,7 @@ impl<'a, 's> Context<'a, 's> {
     /// from repeatedly parsing the same streams.
     #[allow(clippy::too_many_arguments)]
     pub fn new_from_parts(
-        module_info_provider: &'a dyn ModuleProvider<'s>,
+        module_info_provider: &'a (dyn ModuleProvider<'s> + Sync),
         sections: &[ImageSectionHeader],
         address_map: &'a AddressMap<'s>,
         global_symbols: &'a SymbolTable<'s>,
@@ -371,7 +384,7 @@ impl<'a, 's> Context<'a, 's> {
             ..
         } = &mut *cache;
         let full_rva_list = full_rva_list
-            .get_or_insert_with(|| Rc::new(self.compute_full_rva_list(module_cache)))
+            .get_or_insert_with(|| Arc::new(self.compute_full_rva_list(module_cache)))
             .clone();
         FunctionIter {
             context: self,
@@ -802,7 +815,7 @@ impl<'a, 's> Context<'a, 's> {
 #[derive(Clone)]
 pub struct FunctionIter<'c, 'a, 's> {
     context: &'c Context<'a, 's>,
-    full_rva_list: Rc<Vec<u32>>,
+    full_rva_list: Arc<Vec<u32>>,
     cur_index: usize,
 }
 
@@ -829,12 +842,12 @@ struct ContextCache<'a, 's> {
     procedure_cache: HashMap<PdbInternalSectionOffset, ExtendedProcedureInfo>,
     extended_module_cache: BTreeMap<usize, Result<ExtendedModuleInfo<'a, 's>>>,
     inline_name_cache: BTreeMap<IdIndex, Result<String>>,
-    full_rva_list: Option<Rc<Vec<u32>>>,
+    full_rva_list: Option<Arc<Vec<u32>>>,
 }
 
 struct BasicModuleInfoCache<'a, 's> {
     cache: HashMap<usize, Option<BasicModuleInfo<'a, 's>>>,
-    module_info_provider: &'a dyn ModuleProvider<'s>,
+    module_info_provider: &'a (dyn ModuleProvider<'s> + Sync),
 }
 
 impl<'a, 's> BasicModuleInfoCache<'a, 's> {
@@ -849,7 +862,7 @@ impl<'a, 's> BasicModuleInfoCache<'a, 's> {
         self.cache
             .entry(module_index)
             .or_insert_with(|| {
-                let module = modules.get(module_index as usize)?;
+                let module = modules.get(module_index)?;
                 let module_info = module_info_provider
                     .get_module_info(module_index, module)
                     .ok()??;
@@ -907,7 +920,7 @@ impl<'a, 's> BasicModuleInfo<'a, 's> {
 
                         functions.push(ProcedureSymbolFunction {
                             offset: data.offset,
-                            len: data.len as u32,
+                            len: data.len,
                             name,
                             symbol_index: symbol.index(),
                             end_symbol_index: data.end,
