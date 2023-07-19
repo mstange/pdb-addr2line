@@ -10,11 +10,11 @@ use pdb::{
 };
 use range_collections::range_set::RangeSetRange;
 use range_collections::{RangeSet, RangeSet2};
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::mem;
+use std::sync::Mutex;
 
 type Result<V> = std::result::Result<V, Error>;
 
@@ -79,10 +79,10 @@ pub trait ModuleProvider<'s> {
 // 'a: Lifetime of the thing that owns the various streams, e.g. ContextPdbData.
 // 's: The PDB Source lifetime.
 pub struct TypeFormatter<'a, 's> {
-    module_provider: &'a dyn ModuleProvider<'s>,
+    module_provider: &'a (dyn ModuleProvider<'s> + Sync),
     modules: Vec<Module<'a>>,
     string_table: Option<&'a StringTable<'s>>,
-    cache: RefCell<TypeFormatterCache<'a>>,
+    cache: Mutex<TypeFormatterCache<'a>>,
     ptr_size: u64,
     flags: TypeFormatterFlags,
 }
@@ -103,7 +103,7 @@ struct TypeFormatterCache<'a> {
 //         the reference to the TypeFormatter.
 struct TypeFormatterForModule<'cache, 'a, 's> {
     module_index: usize,
-    module_provider: &'a dyn ModuleProvider<'s>,
+    module_provider: &'a (dyn ModuleProvider<'s> + Sync),
     modules: &'cache [Module<'a>],
     string_table: Option<&'a StringTable<'s>>,
     cache: &'cache mut TypeFormatterCache<'a>,
@@ -119,7 +119,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
     /// for other uses, you may want to call this method in order to avoid overhead
     /// from repeatedly parsing the same streams.
     pub fn new_from_parts(
-        module_provider: &'a dyn ModuleProvider<'s>,
+        module_provider: &'a (dyn ModuleProvider<'s> + Sync),
         modules: Vec<Module<'a>>,
         debug_info: &DebugInformation<'s>,
         type_info: &'a TypeInformation<'s>,
@@ -151,7 +151,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
             module_provider,
             modules,
             string_table,
-            cache: RefCell::new(TypeFormatterCache {
+            cache: Mutex::new(TypeFormatterCache {
                 type_map,
                 type_size_cache,
                 id_map,
@@ -173,7 +173,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
     where
         F: FnOnce(&mut TypeFormatterForModule<'_, 'a, 's>) -> R,
     {
-        let mut cache = self.cache.borrow_mut();
+        let mut cache = self.cache.lock().unwrap();
         let mut for_module = TypeFormatterForModule {
             module_index,
             module_provider: self.module_provider,
