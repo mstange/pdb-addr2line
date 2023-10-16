@@ -60,12 +60,12 @@ use pdb::{
     PdbInternalSectionOffset, PublicSymbol, RawString, Rva, Source, StringTable, SymbolData,
     SymbolIndex, SymbolIter, SymbolTable, TypeIndex, TypeInformation, PDB,
 };
-use range_collections::{AbstractRangeSet, RangeSet, RangeSet2};
+use range_collections::range_set::RangeSetRange;
+use range_collections::{RangeSet, RangeSet2};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::LowerHex;
 use std::mem;
-use std::ops::Bound;
 use std::rc::Rc;
 use std::{borrow::Cow, cell::RefCell, collections::BTreeMap};
 
@@ -1309,7 +1309,7 @@ fn process_inlinee_symbols(
         let missing_ranges: RangeSet2<u32> = &callee_ranges - &ranges;
         for range in missing_ranges.iter() {
             let (start_offset, end_offset) = match range {
-                (Bound::Included(s), Bound::Excluded(e)) => (*s, *e),
+                RangeSetRange::Range(r) => (*r.start, *r.end),
                 other => {
                     panic!("Unexpected range bounds {:?}", other);
                 }
