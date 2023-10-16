@@ -2,9 +2,10 @@ use std::borrow::Cow;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, Lines, StdinLock, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use clap::{Arg, Command, Values};
+use clap::parser::ValuesRef;
+use clap::{value_parser, Arg, ArgAction, Command};
 use msvc_demangler::DemangleFlags;
 use pdb_addr2line::pdb;
 
@@ -17,7 +18,7 @@ fn parse_uint_from_hex_string(string: &str) -> u32 {
 }
 
 enum Addrs<'a> {
-    Args(Values<'a>),
+    Args(ValuesRef<'a, String>),
     Stdin(Lines<StdinLock<'a>>),
 }
 
@@ -89,6 +90,7 @@ fn main() {
                 .short('e')
                 .long("exe")
                 .value_name("filename")
+                .value_parser(value_parser!(PathBuf))
                 .help(
                     "Specify the name of the executable for which addresses should be translated.",
                 )
@@ -98,49 +100,67 @@ fn main() {
                 .value_name("filename")
                 .help("Path to supplementary object file."),
             Arg::new("functions")
+                .action(ArgAction::SetTrue)
                 .short('f')
                 .long("functions")
                 .help("Display function names as well as file and line number information."),
-            Arg::new("pretty").short('p').long("pretty-print").help(
-                "Make the output more human friendly: each location are printed on \
+            Arg::new("pretty")
+                .action(ArgAction::SetTrue)
+                .short('p')
+                .long("pretty-print")
+                .help(
+                    "Make the output more human friendly: each location are printed on \
                      one line.",
-            ),
-            Arg::new("inlines").short('i').long("inlines").help(
-                "If the address belongs to a function that was inlined, the source \
+                ),
+            Arg::new("inlines")
+                .action(ArgAction::SetTrue)
+                .short('i')
+                .long("inlines")
+                .help(
+                    "If the address belongs to a function that was inlined, the source \
              information for all enclosing scopes back to the first non-inlined \
              function will also be printed.",
-            ),
-            Arg::new("addresses").short('a').long("addresses").help(
-                "Display the address before the function name, file and line \
+                ),
+            Arg::new("addresses")
+                .action(ArgAction::SetTrue)
+                .short('a')
+                .long("addresses")
+                .help(
+                    "Display the address before the function name, file and line \
                      number information.",
-            ),
+                ),
             Arg::new("basenames")
+                .action(ArgAction::SetTrue)
                 .short('s')
                 .long("basenames")
                 .help("Display only the base of each file name."),
-            Arg::new("demangle").short('C').long("demangle").help(
-                "Demangle function names. \
+            Arg::new("demangle")
+                .action(ArgAction::SetTrue)
+                .short('C')
+                .long("demangle")
+                .help(
+                    "Demangle function names. \
              Specifying a specific demangling style (like GNU addr2line) \
              is not supported. (TODO)",
-            ),
+                ),
             Arg::new("llvm")
+                .action(ArgAction::SetTrue)
                 .long("llvm")
                 .help("Display output in the same format as llvm-symbolizer."),
             Arg::new("addrs")
-                .takes_value(true)
-                .multiple_occurrences(true)
+                .action(ArgAction::Append)
                 .help("Addresses to use instead of reading from stdin."),
         ])
         .get_matches();
 
-    let do_functions = matches.is_present("functions");
-    let do_inlines = matches.is_present("inlines");
-    let pretty = matches.is_present("pretty");
-    let print_addrs = matches.is_present("addresses");
-    let basenames = matches.is_present("basenames");
-    let demangle = matches.is_present("demangle");
-    let llvm = matches.is_present("llvm");
-    let path = matches.value_of("exe").unwrap();
+    let do_functions = matches.get_flag("functions");
+    let do_inlines = matches.get_flag("inlines");
+    let pretty = matches.get_flag("pretty");
+    let print_addrs = matches.get_flag("addresses");
+    let basenames = matches.get_flag("basenames");
+    let demangle = matches.get_flag("demangle");
+    let llvm = matches.get_flag("llvm");
+    let path = matches.get_one::<PathBuf>("exe").unwrap();
 
     let file = File::open(path).unwrap();
     let map = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
@@ -152,7 +172,7 @@ fn main() {
 
     let stdin = std::io::stdin();
     let addrs = matches
-        .values_of("addrs")
+        .get_many("addrs")
         .map(Addrs::Args)
         .unwrap_or_else(|| Addrs::Stdin(stdin.lock().lines()));
 
@@ -262,7 +282,7 @@ impl<'s> pdb::Source<'s> for Source {
         let mut bytes = Vec::with_capacity(len);
 
         for slice in slices {
-            bytes.extend_from_slice(&self.0[slice.offset as usize..][..slice.size as usize]);
+            bytes.extend_from_slice(&self.0[slice.offset as usize..][..slice.size]);
         }
 
         Ok(Box::new(ReadView { bytes }))

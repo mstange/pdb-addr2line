@@ -8,18 +8,19 @@ use pdb::{
     ProcedureType, RawString, StringTable, TypeData, TypeIndex, TypeInformation, UnionType,
     Variant,
 };
+use range_collections::range_set::RangeSetRange;
 use range_collections::{RangeSet, RangeSet2};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::mem;
-use std::ops::Bound;
 
 type Result<V> = std::result::Result<V, Error>;
 
 bitflags! {
     /// Flags for [`TypeFormatter`].
+    #[derive(Clone, Copy)]
     pub struct TypeFormatterFlags: u32 {
         /// Do not print the return type for the root function.
         const NO_FUNCTION_RETURN = 0b1;
@@ -1222,11 +1223,8 @@ impl<'a> TypeSizeCache<'a> {
         let uncached_ranges = &candidate_range - &self.cached_ranges;
         for uncached_range in uncached_ranges.iter() {
             let (range_start, range_end) = match uncached_range {
-                (Bound::Included(range_start), Bound::Excluded(range_end)) => {
-                    (*range_start, Some(*range_end))
-                }
-                (Bound::Included(range_start), Bound::Unbounded) => (*range_start, None),
-                _ => panic!("Unexpected range {:?}", uncached_range),
+                RangeSetRange::Range(r) => (*r.start, Some(*r.end)),
+                RangeSetRange::RangeFrom(r) => (*r.start, None),
             };
             for index in range_start.. {
                 if let Some(range_end) = range_end {

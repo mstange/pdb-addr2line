@@ -14,17 +14,17 @@ version = "0.10.4"
 exclude = ["/.github", "/tests"]
 
 [dependencies]
-bitflags = "1.0"
+bitflags = "2.0"
 maybe-owned = "0.3.4"
 pdb = "0.8.0"
-range-collections = "0.2.4"
+range-collections = "0.4.5"
 thiserror = "1.0"
-elsa = "1.4.0"
+elsa = "1.9.0"
 
 [dev-dependencies]
-clap = "3.1.18"
+clap = "4.4.6"
 getopts = "0.2.21"
-memmap2 = "0.5.0"
+memmap2 = "0.9.0"
 msvc-demangler = "0.9.0"
 
 [[example]]
