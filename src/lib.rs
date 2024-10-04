@@ -341,7 +341,9 @@ impl<'a, 's> Context<'a, 's> {
         // If we have both a public symbol and a placeholder symbol at the same offset,
         // make it so that the symbol with name comes first, so that we keep it during
         // the deduplication.
-        global_functions.sort_unstable_by_key(|p| {
+        // If there are multiple symbols at the same address, we want to keep the first
+        // one, so we use a stable sort.
+        global_functions.sort_by_key(|p| {
             (
                 p.start_offset.section,
                 p.start_offset.offset,
@@ -948,7 +950,9 @@ impl<'a, 's> BasicModuleInfo<'a, 's> {
             }
         }
         // Sort and de-duplicate, so that we can use binary search during lookup.
-        functions.sort_unstable_by_key(|p| (p.offset.section, p.offset.offset));
+        // Use a stable sort: if there are multiple symbols at the same address,
+        // we want to keep the first one.
+        functions.sort_by_key(|p| (p.offset.section, p.offset.offset));
         functions.dedup_by_key(|p| p.offset);
 
         Ok(BasicModuleInfo {
