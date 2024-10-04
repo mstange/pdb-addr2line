@@ -1162,7 +1162,7 @@ impl ExtendedProcedureInfo {
     ) -> Option<&str> {
         self.name
             .get_or_insert_with(|| {
-                if proc.type_index == TypeIndex(0) && !proc.name.as_bytes().starts_with(&[b'?']) {
+                if proc.type_index == TypeIndex(0) && !proc.name.as_bytes().starts_with(b"?") {
                     // We have no type, so proc.name might be an argument-less string.
                     // If we have a public symbol at this address which is a decorated name
                     // (starts with a '?'), prefer to use that because it'll usually include
@@ -1173,7 +1173,7 @@ impl ExtendedProcedureInfo {
                         })
                     {
                         if let Some(name) = global_functions[public_fun_index].name {
-                            if name.as_bytes().starts_with(&[b'?']) {
+                            if name.as_bytes().starts_with(b"?") {
                                 return Some(name.to_string().to_string());
                             }
                         }
