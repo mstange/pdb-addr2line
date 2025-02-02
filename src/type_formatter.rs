@@ -256,7 +256,7 @@ impl<'a, 's> TypeFormatter<'a, 's> {
     }
 }
 
-impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
+impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
     /// Get the size, in bytes, of the type at `index`.
     pub fn get_type_size(&mut self, index: TypeIndex) -> u64 {
         if let Ok(type_data) = self.parse_type_index(index) {
@@ -389,7 +389,7 @@ impl<'cache, 'a, 's> TypeFormatterForModule<'cache, 'a, 's> {
     /// identifier of the namespace. Demanglers usually resolve this as "anonymous namespace".
     fn is_anonymous_namespace(name: &str) -> bool {
         name.strip_prefix("?A0x")
-            .map_or(false, |rest| u32::from_str_radix(rest, 16).is_ok())
+            .is_some_and(|rest| u32::from_str_radix(rest, 16).is_ok())
     }
 
     fn resolve_index<I>(&mut self, index: I) -> Result<I>

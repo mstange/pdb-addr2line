@@ -202,7 +202,7 @@ impl<'p, 's, S: Source<'s> + Send + 's> ContextPdbData<'p, 's, S> {
     }
 }
 
-impl<'p, 's, S: Source<'s> + Send + 's> ModuleProvider<'s> for ContextPdbData<'p, 's, S> {
+impl<'s, S: Source<'s> + Send + 's> ModuleProvider<'s> for ContextPdbData<'_, 's, S> {
     fn get_module_info(
         &self,
         module_index: usize,
@@ -821,7 +821,7 @@ pub struct FunctionIter<'c, 'a, 's> {
     cur_index: usize,
 }
 
-impl<'c, 'a, 's> Iterator for FunctionIter<'c, 'a, 's> {
+impl Iterator for FunctionIter<'_, '_, '_> {
     type Item = Function;
 
     fn next(&mut self) -> Option<Function> {
