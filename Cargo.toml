@@ -18,7 +18,7 @@ bitflags = "2.0"
 maybe-owned = "0.3.4"
 pdb = { package = "pdb2", version = "0.9" }
 range-collections = "0.4.5"
-thiserror = "1.0"
+thiserror = "2"
 elsa = "1.9.0"
 
 [dev-dependencies]
