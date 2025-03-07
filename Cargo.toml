@@ -25,7 +25,7 @@ elsa = "1.9.0"
 clap = "4.4.6"
 getopts = "0.2.21"
 memmap2 = "0.9.0"
-msvc-demangler = "0.9.0"
+msvc-demangler = "0.11"
 
 [[example]]
 name = "pdb-addr2line"
