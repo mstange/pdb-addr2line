@@ -532,6 +532,7 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
                     PrimitiveKind::Char
                     | PrimitiveKind::UChar
                     | PrimitiveKind::RChar
+                    | PrimitiveKind::Char8
                     | PrimitiveKind::I8
                     | PrimitiveKind::U8
                     | PrimitiveKind::Bool8 => 1,
@@ -1020,6 +1021,7 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
             PrimitiveKind::UChar => "unsigned char",
             PrimitiveKind::RChar => "char",
             PrimitiveKind::WChar => "wchar_t",
+            PrimitiveKind::Char8 => "char8_t",
             PrimitiveKind::RChar16 => "char16_t",
             PrimitiveKind::RChar32 => "char32_t",
             PrimitiveKind::I8 => "int8_t",
