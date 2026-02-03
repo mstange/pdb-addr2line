@@ -472,7 +472,7 @@ impl<'a, 's> Context<'a, 's> {
     /// into the procedure by the compiler, at that address.
     ///
     /// A lot of information is cached so that repeated calls are fast.
-    pub fn find_frames(&self, probe: u32) -> Result<Option<FunctionFrames>> {
+    pub fn find_frames(&self, probe: u32) -> Result<Option<FunctionFrames<'_>>> {
         let offset = match Rva(probe).to_internal_offset(self.address_map) {
             Some(offset) => offset,
             None => return Ok(None),
