@@ -51,6 +51,8 @@ pub enum Error {
 
     #[error("Could not get the ModuleInfo for module index {0}")]
     ModuleInfoNotFound(usize),
+    #[error("Type with index {0} is circular")]
+    CircularTypeDefinition(u32),
 }
 
 impl From<pdb::Error> for Error {

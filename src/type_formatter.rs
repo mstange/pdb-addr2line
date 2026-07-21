@@ -11,7 +11,7 @@ use pdb::{
 use range_collections::range_set::RangeSetRange;
 use range_collections::{RangeSet, RangeSet2};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
 use std::mem;
 use std::sync::Mutex;
@@ -281,22 +281,34 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
             return self.emit_name_str(w, name);
         }
 
+        let mut seen = BTreeSet::from([function_type_index]);
+
         match self.parse_type_index(function_type_index)? {
             TypeData::MemberFunction(t) => {
                 if t.this_pointer_type.is_none() {
                     self.maybe_emit_static(w)?;
                 }
-                self.maybe_emit_return_type(w, Some(t.return_type), t.attributes)?;
+                self.maybe_emit_return_type(
+                    w,
+                    Some(t.return_type),
+                    t.attributes,
+                    &mut Default::default(),
+                )?;
                 self.emit_name_str(w, name)?;
-                self.emit_method_args(w, t, true)?;
+                self.emit_method_args(w, t, true, &mut seen)?;
             }
             TypeData::Procedure(t) => {
-                self.maybe_emit_return_type(w, t.return_type, t.attributes)?;
+                self.maybe_emit_return_type(
+                    w,
+                    t.return_type,
+                    t.attributes,
+                    &mut Default::default(),
+                )?;
                 self.emit_name_str(w, name)?;
 
                 if !self.has_flags(TypeFormatterFlags::NO_ARGUMENTS) {
                     write!(w, "(")?;
-                    self.emit_type_index(w, t.argument_list)?;
+                    self.emit_type_index(w, t.argument_list, &mut seen)?;
                     write!(w, ")")?;
                 }
             }
@@ -333,11 +345,16 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
                 if t.this_pointer_type.is_none() {
                     self.maybe_emit_static(w)?;
                 }
-                self.maybe_emit_return_type(w, Some(t.return_type), t.attributes)?;
-                self.emit_type_index(w, m.parent)?;
+                self.maybe_emit_return_type(
+                    w,
+                    Some(t.return_type),
+                    t.attributes,
+                    &mut Default::default(),
+                )?;
+                self.emit_type_index(w, m.parent, &mut Default::default())?;
                 write!(w, "::")?;
                 self.emit_name_str(w, &m.name.to_string())?;
-                self.emit_method_args(w, t, true)?;
+                self.emit_method_args(w, t, true, &mut Default::default())?;
             }
             IdData::Function(f) => {
                 let t = match self.parse_type_index(f.function_type)? {
@@ -345,7 +362,12 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
                     _ => return Err(Error::FunctionIdIsNotProcedureType),
                 };
 
-                self.maybe_emit_return_type(w, t.return_type, t.attributes)?;
+                self.maybe_emit_return_type(
+                    w,
+                    t.return_type,
+                    t.attributes,
+                    &mut Default::default(),
+                )?;
                 if let Some(scope) = f.scope {
                     self.emit_id(w, scope)?;
                     write!(w, "::")?;
@@ -355,7 +377,7 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
 
                 if !self.has_flags(TypeFormatterFlags::NO_ARGUMENTS) {
                     write!(w, "(")?;
-                    self.emit_type_index(w, t.argument_list)?;
+                    self.emit_type_index(w, t.argument_list, &mut Default::default())?;
                     write!(w, ")")?;
                 }
             }
@@ -374,7 +396,7 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
                     if i > 0 {
                         write!(w, "\" \"")?;
                     }
-                    self.emit_type_index(w, *type_index)?;
+                    self.emit_type_index(w, *type_index, &mut Default::default())?;
                 }
                 write!(w, "\"")?;
             }
@@ -609,12 +631,13 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         w: &mut impl Write,
         type_index: Option<TypeIndex>,
         attrs: FunctionAttributes,
+        seen: &mut BTreeSet<TypeIndex>,
     ) -> Result<()> {
         if self.has_flags(TypeFormatterFlags::NO_FUNCTION_RETURN) {
             return Ok(());
         }
 
-        self.emit_return_type(w, type_index, attrs)?;
+        self.emit_return_type(w, type_index, attrs, seen)?;
         Ok(())
     }
 
@@ -632,10 +655,11 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         w: &mut impl Write,
         type_index: Option<TypeIndex>,
         attrs: FunctionAttributes,
+        seen: &mut BTreeSet<TypeIndex>,
     ) -> Result<()> {
         if !attrs.is_constructor() {
             if let Some(index) = type_index {
-                self.emit_type_index(w, index)?;
+                self.emit_type_index(w, index, seen)?;
                 write!(w, " ")?;
             }
         }
@@ -694,6 +718,7 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         w: &mut impl Write,
         method_type: MemberFunctionType,
         allow_emit_const: bool,
+        seen: &mut BTreeSet<TypeIndex>,
     ) -> Result<()> {
         if self.has_flags(TypeFormatterFlags::NO_ARGUMENTS) {
             return Ok(());
@@ -721,10 +746,17 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
 
         write!(w, "(")?;
         if let Some(first_arg) = extra_first_arg {
-            self.emit_type_index(w, first_arg)?;
-            self.emit_arg_list(w, args_list, true)?;
+            self.emit_type_index(w, first_arg, seen)?;
+
+            seen.insert(method_type.argument_list);
+            let res = self.emit_arg_list(w, args_list, true, seen);
+            seen.remove(&method_type.argument_list);
+            res?
         } else {
-            self.emit_arg_list(w, args_list, false)?;
+            seen.insert(method_type.argument_list);
+            let res = self.emit_arg_list(w, args_list, false, seen);
+            seen.remove(&method_type.argument_list);
+            res?
         }
         write!(w, ")")?;
 
@@ -791,13 +823,14 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         w: &mut impl Write,
         fun: MemberFunctionType,
         attributes: Vec<PtrAttributes>,
+        seen: &mut BTreeSet<TypeIndex>,
     ) -> Result<()> {
-        self.emit_return_type(w, Some(fun.return_type), fun.attributes)?;
+        self.emit_return_type(w, Some(fun.return_type), fun.attributes, seen)?;
         write!(w, "(")?;
-        self.emit_type_index(w, fun.class_type)?;
+        self.emit_type_index(w, fun.class_type, seen)?;
         self.emit_attributes(w, attributes, false, false)?;
         write!(w, ")")?;
-        self.emit_method_args(w, fun, false)?;
+        self.emit_method_args(w, fun, false, seen)?;
         Ok(())
     }
 
@@ -806,14 +839,15 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         w: &mut impl Write,
         fun: ProcedureType,
         attributes: Vec<PtrAttributes>,
+        seen: &mut BTreeSet<TypeIndex>,
     ) -> Result<()> {
-        self.emit_return_type(w, fun.return_type, fun.attributes)?;
+        self.emit_return_type(w, fun.return_type, fun.attributes, seen)?;
 
         write!(w, "(")?;
         self.emit_attributes(w, attributes, false, false)?;
         write!(w, ")")?;
         write!(w, "(")?;
-        self.emit_type_index(w, fun.argument_list)?;
+        self.emit_type_index(w, fun.argument_list, seen)?;
         write!(w, ")")?;
         Ok(())
     }
@@ -823,9 +857,10 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         w: &mut impl Write,
         type_data: TypeData,
         attributes: Vec<PtrAttributes>,
+        seen: &mut BTreeSet<TypeIndex>,
     ) -> Result<()> {
         let mut buf = String::new();
-        self.emit_type(&mut buf, type_data)?;
+        self.emit_type(&mut buf, type_data, seen)?;
         let previous_byte_was_pointer_sigil = buf
             .as_bytes()
             .last()
@@ -842,24 +877,41 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         w: &mut impl Write,
         attributes: Vec<PtrAttributes>,
         type_data: TypeData,
+        seen: &mut BTreeSet<TypeIndex>,
     ) -> Result<()> {
         match type_data {
-            TypeData::MemberFunction(t) => self.emit_member_ptr(w, t, attributes)?,
-            TypeData::Procedure(t) => self.emit_proc_ptr(w, t, attributes)?,
-            _ => self.emit_other_ptr(w, type_data, attributes)?,
+            TypeData::MemberFunction(t) => self.emit_member_ptr(w, t, attributes, seen)?,
+            TypeData::Procedure(t) => self.emit_proc_ptr(w, t, attributes, seen)?,
+            _ => self.emit_other_ptr(w, type_data, attributes, seen)?,
         };
         Ok(())
     }
 
-    fn emit_ptr(&mut self, w: &mut impl Write, ptr: PointerType, is_const: bool) -> Result<()> {
+    fn emit_ptr(
+        &mut self,
+        w: &mut impl Write,
+        ptr: PointerType,
+        is_const: bool,
+        seen: &mut BTreeSet<TypeIndex>,
+    ) -> Result<()> {
         let mut attributes = vec![PtrAttributes {
             is_pointer_const: ptr.attributes.is_const() || is_const,
             is_pointee_const: false,
             mode: ptr.attributes.pointer_mode(),
         }];
         let mut ptr = ptr;
+        let mut seen_here = BTreeSet::default();
         loop {
-            let type_data = self.parse_type_index(ptr.underlying_type)?;
+            if seen.contains(&ptr.underlying_type) {
+                return Err(Error::CircularTypeDefinition(ptr.underlying_type.0));
+            }
+
+            seen.insert(ptr.underlying_type);
+            seen_here.insert(ptr.underlying_type);
+
+            let type_data = self
+                .parse_type_index(ptr.underlying_type)
+                .inspect_err(|_| seen.retain(|idx| !seen_here.contains(idx)))?;
             match type_data {
                 TypeData::Pointer(t) => {
                     attributes.push(PtrAttributes {
@@ -872,7 +924,17 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
                 TypeData::Modifier(t) => {
                     // the vec cannot be empty since we push something in just before the loop
                     attributes.last_mut().unwrap().is_pointee_const = t.constant;
-                    let underlying_type_data = self.parse_type_index(t.underlying_type)?;
+
+                    if seen.contains(&t.underlying_type) {
+                        return Err(Error::CircularTypeDefinition(ptr.underlying_type.0));
+                    }
+
+                    seen.insert(t.underlying_type);
+                    seen_here.insert(t.underlying_type);
+
+                    let underlying_type_data = self
+                        .parse_type_index(t.underlying_type)
+                        .inspect_err(|_| seen.retain(|idx| !seen_here.contains(idx)))?;
                     if let TypeData::Pointer(t) = underlying_type_data {
                         attributes.push(PtrAttributes {
                             is_pointer_const: t.attributes.is_const(),
@@ -881,13 +943,15 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
                         });
                         ptr = t;
                     } else {
-                        self.emit_ptr_helper(w, attributes, underlying_type_data)?;
-                        return Ok(());
+                        let res = self.emit_ptr_helper(w, attributes, underlying_type_data, seen);
+                        seen.retain(|idx| !seen_here.contains(idx));
+                        return res;
                     }
                 }
                 _ => {
-                    self.emit_ptr_helper(w, attributes, type_data)?;
-                    return Ok(());
+                    let res = self.emit_ptr_helper(w, attributes, type_data, seen);
+                    seen.retain(|idx| !seen_here.contains(idx));
+                    return res;
                 }
             }
         }
@@ -932,10 +996,15 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         }
     }
 
-    fn emit_array(&mut self, w: &mut impl Write, array: ArrayType) -> Result<()> {
+    fn emit_array(
+        &mut self,
+        w: &mut impl Write,
+        array: ArrayType,
+        seen: &mut BTreeSet<TypeIndex>,
+    ) -> Result<()> {
         let (dimensions_as_bytes, base_index, base) = self.get_array_info(array)?;
         let base_size = self.get_data_size(base_index, &base);
-        self.emit_type(w, base)?;
+        self.emit_type(w, base, seen)?;
 
         let mut iter = dimensions_as_bytes.into_iter().peekable();
         while let Some(current_level_byte_size) = iter.next() {
@@ -953,19 +1022,38 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         Ok(())
     }
 
-    fn emit_modifier(&mut self, w: &mut impl Write, modifier: ModifierType) -> Result<()> {
+    fn emit_modifier(
+        &mut self,
+        w: &mut impl Write,
+        modifier: ModifierType,
+        seen: &mut BTreeSet<TypeIndex>,
+    ) -> Result<()> {
+        if seen.contains(&modifier.underlying_type) {
+            return Err(Error::CircularTypeDefinition(modifier.underlying_type.0));
+        }
+        seen.insert(modifier.underlying_type);
+        let res = self.emit_modifier_helper(w, modifier, seen);
+        seen.remove(&modifier.underlying_type);
+        res
+    }
+
+    fn emit_modifier_helper(
+        &mut self,
+        w: &mut impl Write,
+        modifier: ModifierType,
+        seen: &mut BTreeSet<TypeIndex>,
+    ) -> Result<()> {
         let type_data = self.parse_type_index(modifier.underlying_type)?;
         match type_data {
-            TypeData::Pointer(ptr) => self.emit_ptr(w, ptr, modifier.constant)?,
-            TypeData::Primitive(prim) => self.emit_primitive(w, prim, modifier.constant)?,
+            TypeData::Pointer(ptr) => self.emit_ptr(w, ptr, modifier.constant, seen),
+            TypeData::Primitive(prim) => self.emit_primitive(w, prim, modifier.constant),
             _ => {
                 if modifier.constant {
                     write!(w, "const ")?
                 }
-                self.emit_type(w, type_data)?;
+                self.emit_type(w, type_data, seen)
             }
         }
-        Ok(())
     }
 
     fn emit_class(&mut self, w: &mut impl Write, class: ClassType) -> Result<()> {
@@ -987,6 +1075,7 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         w: &mut impl Write,
         list: ArgumentList,
         comma_before_first: bool,
+        seen: &mut BTreeSet<TypeIndex>,
     ) -> Result<()> {
         if let Some((first, args)) = list.arguments.split_first() {
             if comma_before_first {
@@ -995,13 +1084,13 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
                     write!(w, " ")?;
                 }
             }
-            self.emit_type_index(w, *first)?;
+            self.emit_type_index(w, *first, seen)?;
             for index in args.iter() {
                 write!(w, ",")?;
                 if self.has_flags(TypeFormatterFlags::SPACE_AFTER_COMMA) {
                     write!(w, " ")?;
                 }
-                self.emit_type_index(w, *index)?;
+                self.emit_type_index(w, *index, seen)?;
             }
         }
         Ok(())
@@ -1089,9 +1178,23 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         Ok(())
     }
 
-    fn emit_type_index(&mut self, w: &mut impl Write, index: TypeIndex) -> Result<()> {
+    fn emit_type_index(
+        &mut self,
+        w: &mut impl Write,
+        index: TypeIndex,
+        seen: &mut BTreeSet<TypeIndex>,
+    ) -> Result<()> {
+        if seen.contains(&index) {
+            return Err(Error::CircularTypeDefinition(index.0));
+        }
+
         match self.parse_type_index(index) {
-            Ok(type_data) => self.emit_type(w, type_data),
+            Ok(type_data) => {
+                seen.insert(index);
+                let res = self.emit_type(w, type_data, seen);
+                seen.remove(&index);
+                res
+            }
             Err(Error::PdbError(pdb::Error::UnimplementedTypeKind(t))) => {
                 write!(w, "<unimplemented type kind 0x{:x}>", t)?;
                 Ok(())
@@ -1104,8 +1207,13 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         }
     }
 
-    fn emit_type(&mut self, w: &mut impl Write, type_data: TypeData) -> Result<()> {
-        match self.emit_type_inner(w, type_data) {
+    fn emit_type(
+        &mut self,
+        w: &mut impl Write,
+        type_data: TypeData,
+        seen: &mut BTreeSet<TypeIndex>,
+    ) -> Result<()> {
+        match self.emit_type_inner(w, type_data, seen) {
             Ok(()) => Ok(()),
             Err(Error::PdbError(pdb::Error::TypeNotFound(type_index))) => {
                 write!(w, "<missing type 0x{:x}>", type_index)?;
@@ -1115,28 +1223,33 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         }
     }
 
-    fn emit_type_inner(&mut self, w: &mut impl Write, type_data: TypeData) -> Result<()> {
+    fn emit_type_inner(
+        &mut self,
+        w: &mut impl Write,
+        type_data: TypeData,
+        seen: &mut BTreeSet<TypeIndex>,
+    ) -> Result<()> {
         match type_data {
             TypeData::Primitive(t) => self.emit_primitive(w, t, false)?,
             TypeData::Class(t) => self.emit_class(w, t)?,
             TypeData::MemberFunction(t) => {
-                self.maybe_emit_return_type(w, Some(t.return_type), t.attributes)?;
+                self.maybe_emit_return_type(w, Some(t.return_type), t.attributes, seen)?;
                 write!(w, "()")?;
-                self.emit_method_args(w, t, false)?;
+                self.emit_method_args(w, t, false, seen)?;
             }
             TypeData::Procedure(t) => {
-                self.maybe_emit_return_type(w, t.return_type, t.attributes)?;
+                self.maybe_emit_return_type(w, t.return_type, t.attributes, seen)?;
                 write!(w, "()(")?;
-                self.emit_type_index(w, t.argument_list)?;
+                self.emit_type_index(w, t.argument_list, seen)?;
                 write!(w, "")?;
             }
-            TypeData::ArgumentList(t) => self.emit_arg_list(w, t, false)?,
-            TypeData::Pointer(t) => self.emit_ptr(w, t, false)?,
-            TypeData::Array(t) => self.emit_array(w, t)?,
+            TypeData::ArgumentList(t) => self.emit_arg_list(w, t, false, seen)?,
+            TypeData::Pointer(t) => self.emit_ptr(w, t, false, seen)?,
+            TypeData::Array(t) => self.emit_array(w, t, seen)?,
             TypeData::Union(t) => self.emit_named(w, "union", t.name)?,
             TypeData::Enumeration(t) => self.emit_named(w, "enum", t.name)?,
             TypeData::Enumerate(t) => self.emit_named(w, "enum class", t.name)?,
-            TypeData::Modifier(t) => self.emit_modifier(w, t)?,
+            TypeData::Modifier(t) => self.emit_modifier(w, t, seen)?,
             _ => write!(w, "unhandled type /* {:?} */", type_data)?,
         }
 
