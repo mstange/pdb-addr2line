@@ -728,12 +728,11 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
 
         write!(w, "(")?;
         if let Some(first_arg) = extra_first_arg {
-            self.emit_type_index(w, first_arg, seen)?;
-
             seen.insert(method_type.argument_list);
-            let res = self.emit_arg_list(w, args_list, true, seen);
+            let res1 = self.emit_type_index(w, first_arg, seen);
+            let res2 = res1.and_then(|_| self.emit_arg_list(w, args_list, true, seen));
             seen.remove(&method_type.argument_list);
-            res?
+            res2?
         } else {
             seen.insert(method_type.argument_list);
             let res = self.emit_arg_list(w, args_list, false, seen);
