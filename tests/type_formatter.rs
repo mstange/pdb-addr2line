@@ -93,3 +93,17 @@ fn test() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_circular() -> Result<(), Box<dyn Error>> {
+    let file = std::fs::File::open(fixture("circular.pdb"))?;
+    let data = ContextPdbData::try_from_pdb(pdb::PDB::open(file)?)?;
+    let formatter = data.make_type_formatter()?;
+
+    assert!(matches!(
+        formatter.format_function("fprintf", 5, TypeIndex(0x2a9b)),
+        Err(pdb_addr2line::Error::CircularTypeDefinition(0x11b9))
+    ));
+
+    Ok(())
+}
