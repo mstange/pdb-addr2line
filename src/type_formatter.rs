@@ -288,22 +288,12 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
                 if t.this_pointer_type.is_none() {
                     self.maybe_emit_static(w)?;
                 }
-                self.maybe_emit_return_type(
-                    w,
-                    Some(t.return_type),
-                    t.attributes,
-                    &mut Default::default(),
-                )?;
+                self.maybe_emit_return_type(w, Some(t.return_type), t.attributes, &mut seen)?;
                 self.emit_name_str(w, name)?;
                 self.emit_method_args(w, t, true, &mut seen)?;
             }
             TypeData::Procedure(t) => {
-                self.maybe_emit_return_type(
-                    w,
-                    t.return_type,
-                    t.attributes,
-                    &mut Default::default(),
-                )?;
+                self.maybe_emit_return_type(w, t.return_type, t.attributes, &mut seen)?;
                 self.emit_name_str(w, name)?;
 
                 if !self.has_flags(TypeFormatterFlags::NO_ARGUMENTS) {
@@ -337,6 +327,7 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         };
         match id_data {
             IdData::MemberFunction(m) => {
+                let mut seen = BTreeSet::from([m.function_type]);
                 let t = match self.parse_type_index(m.function_type)? {
                     TypeData::MemberFunction(t) => t,
                     _ => return Err(Error::MemberFunctionIdIsNotMemberFunctionType),
@@ -345,29 +336,20 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
                 if t.this_pointer_type.is_none() {
                     self.maybe_emit_static(w)?;
                 }
-                self.maybe_emit_return_type(
-                    w,
-                    Some(t.return_type),
-                    t.attributes,
-                    &mut Default::default(),
-                )?;
-                self.emit_type_index(w, m.parent, &mut Default::default())?;
+                self.maybe_emit_return_type(w, Some(t.return_type), t.attributes, &mut seen)?;
+                self.emit_type_index(w, m.parent, &mut seen)?;
                 write!(w, "::")?;
                 self.emit_name_str(w, &m.name.to_string())?;
-                self.emit_method_args(w, t, true, &mut Default::default())?;
+                self.emit_method_args(w, t, true, &mut seen)?;
             }
             IdData::Function(f) => {
+                let mut seen = BTreeSet::from([f.function_type]);
                 let t = match self.parse_type_index(f.function_type)? {
                     TypeData::Procedure(t) => t,
                     _ => return Err(Error::FunctionIdIsNotProcedureType),
                 };
 
-                self.maybe_emit_return_type(
-                    w,
-                    t.return_type,
-                    t.attributes,
-                    &mut Default::default(),
-                )?;
+                self.maybe_emit_return_type(w, t.return_type, t.attributes, &mut seen)?;
                 if let Some(scope) = f.scope {
                     self.emit_id(w, scope)?;
                     write!(w, "::")?;
@@ -377,7 +359,7 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
 
                 if !self.has_flags(TypeFormatterFlags::NO_ARGUMENTS) {
                     write!(w, "(")?;
-                    self.emit_type_index(w, t.argument_list, &mut Default::default())?;
+                    self.emit_type_index(w, t.argument_list, &mut seen)?;
                     write!(w, ")")?;
                 }
             }
