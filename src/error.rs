@@ -66,3 +66,9 @@ impl From<std::fmt::Error> for Error {
         Self::FormatError(err)
     }
 }
+
+impl From<crate::type_formatter::AlreadySeenError> for Error {
+    fn from(value: crate::type_formatter::AlreadySeenError) -> Self {
+        Self::CircularTypeDefinition(value.0 .0)
+    }
+}
