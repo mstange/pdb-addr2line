@@ -51,6 +51,8 @@ pub enum Error {
 
     #[error("Could not get the ModuleInfo for module index {0}")]
     ModuleInfoNotFound(usize),
+    #[error("Type with index {0} is circular")]
+    CircularTypeDefinition(u32),
 }
 
 impl From<pdb::Error> for Error {
@@ -62,5 +64,11 @@ impl From<pdb::Error> for Error {
 impl From<std::fmt::Error> for Error {
     fn from(err: std::fmt::Error) -> Self {
         Self::FormatError(err)
+    }
+}
+
+impl From<crate::type_formatter::AlreadySeenError> for Error {
+    fn from(value: crate::type_formatter::AlreadySeenError) -> Self {
+        Self::CircularTypeDefinition(value.0 .0)
     }
 }
