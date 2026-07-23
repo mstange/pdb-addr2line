@@ -969,8 +969,7 @@ impl<'a, 's> TypeFormatterForModule<'_, 'a, 's> {
         let mut iter = dimensions_as_bytes.into_iter().peekable();
         while let Some(current_level_byte_size) = iter.next() {
             let next_level_byte_size = *iter.peek().unwrap_or(&base_size);
-            if next_level_byte_size != 0 {
-                let element_count = current_level_byte_size / next_level_byte_size;
+            if let Some(element_count) = current_level_byte_size.checked_div(next_level_byte_size) {
                 write!(w, "[{}]", element_count)?;
             } else {
                 // The base size can be zero: struct A{}; void foo(A x[10])
@@ -1315,12 +1314,10 @@ impl<'a> TypeSizeCache<'a> {
                         return Some((name, t.size));
                     }
                 }
-                TypeData::Union(t) => {
-                    if !t.properties.forward_reference() {
-                        let name = t.unique_name.unwrap_or(t.name);
-                        self.forward_ref_sizes.insert(name, t.size);
-                        return Some((name, t.size));
-                    }
+                TypeData::Union(t) if !t.properties.forward_reference() => {
+                    let name = t.unique_name.unwrap_or(t.name);
+                    self.forward_ref_sizes.insert(name, t.size);
+                    return Some((name, t.size));
                 }
                 _ => {}
             }
