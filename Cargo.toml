@@ -29,3 +29,4 @@ msvc-demangler = "0.11"
 
 [[example]]
 name = "pdb-addr2line"
+
